@@ -1,0 +1,72 @@
+# Build the installable shell and publish it to GitHub Pages.
+#
+# Pages is the only free host that serves this over HTTPS from an origin a phone
+# will trust, and HTTPS is not optional: a browser refuses to register a service
+# worker over plain http from anything but localhost, so without it the app can
+# be opened on a phone but never installed.
+#
+# Only dist/pwa/ is published. The portable single file is a build artefact for
+# handing round on a disk, not something to serve.
+
+name: Deploy to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A push landing while a deploy is in flight cancels the one queued behind it
+# rather than racing it, so the live site always matches the newest commit that
+# finished building.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # jsdom, for the tests. The app itself has no dependencies at all.
+      - run: npm ci
+
+      # The tests build the app as a side effect, so a broken build fails here
+      # first and nothing gets published.
+      - run: npm test
+
+      - run: node tools/build.mjs
+
+      # The service worker caches './' against its own scope, which on Pages is
+      # /meal_planner/ rather than the root. Catch a shell that hard-coded an
+      # absolute path before it ships a 404 to a phone.
+      - name: Check the build is path-independent
+        run: |
+          if grep -qE '(href|src)="/' dist/pwa/index.html; then
+            echo 'the shell has a root-absolute URL, which breaks under /meal_planner/'
+            grep -nE '(href|src)="/' dist/pwa/index.html
+            exit 1
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/pwa
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

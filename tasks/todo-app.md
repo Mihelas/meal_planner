@@ -107,6 +107,16 @@ chrome, and loads with the network off. No backend involved yet.
   this is an environment limit rather than an app one. First real check is
   installing it on a phone.
 
+### Shipped
+
+Commit `44c7c20` on `main`, pushed to github.com/Mihelas/meal_planner
+(private) on 2026-10-18 — 56 files, 18,788 lines, the whole app as one
+initial commit. Not split into engine-then-PWA: Increment 1 edits `ui.js`
+and `app.js` in place, so a first commit without `install.js` would not
+have built. `.gitattributes` pins LF, because the build hashes the shell
+into the service worker's cache name and a CRLF checkout would stamp a
+different version on every machine.
+
 ## Increment 2 — the backend, proven to keep people apart
 
 - [ ] Supabase project, schema from A2, migrations committed as SQL
