@@ -1,0 +1,8 @@
+# LF everywhere, including in a Windows checkout.
+#
+# Not a style preference: tools/build.mjs stamps the service worker's cache name
+# with a hash of the built shell, so a checkout that rewrites line endings would
+# produce a different version string on every machine — and the icons are PNGs
+# that CRLF conversion would corrupt outright.
+* text=auto eol=lf
+*.png binary
