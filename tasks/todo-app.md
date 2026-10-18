@@ -102,6 +102,10 @@ chrome, and loads with the network off. No backend involved yet.
   asset is announced exactly once, and — the one that matters most later — that
   the worker never answers a cross-origin request or a POST, so Supabase traffic
   passes straight through it.
+- **Verified on a real phone** (2026-10-18): installed from Pages on Android,
+  opens from the launcher with no browser chrome, and survives the airplane-mode
+  test — force-closed and reopened with no signal, it still serves the week. The
+  iPhone has not been tried yet, so the Safari route remains unproven.
 - **Not** verified in a browser: service-worker registration itself. The embedded
   browser pane refuses to register any worker, including a three-line no-op, so
   this is an environment limit rather than an app one. First real check is
@@ -117,16 +121,73 @@ have built. `.gitattributes` pins LF, because the build hashes the shell
 into the service worker's cache name and a CRLF checkout would stamp a
 different version on every machine.
 
+### Hosting
+
+Live at https://mihelas.github.io/meal_planner/ — GitHub Pages, built from
+`main` by `.github/workflows/pages.yml`, publishing `dist/pwa/` only.
+
+The repo had to go public to get it: Pages on a private repo needs a paid
+plan. `src/targets.js` carries both household members' height, weight and
+age, so that is public too — worth moving into stored settings before this
+stops being a test.
+
 ## Increment 2 — the backend, proven to keep people apart
 
-- [ ] Supabase project, schema from A2, migrations committed as SQL
-- [ ] RLS: read/write `household_state` only for members of that household
-- [ ] `redeem_invite(code)` as a Postgres function — a joining user cannot yet
+- [x] Supabase project, schema from A2, migrations committed as SQL
+- [x] RLS: read/write `household_state` only for members of that household
+- [x] `redeem_invite(code)` as a Postgres function — a joining user cannot yet
       read the household, so this cannot be done client-side
-- [ ] Prove isolation with two real users via curl: A cannot read B's household,
+- [x] Prove isolation with two real users via curl: A cannot read B's household,
       cannot write it, and cannot redeem a spent invite
 
 **Verifiable:** the isolation test output, not an assurance that RLS is on.
+
+### What was verified, and how
+
+`tools/verify-isolation.mjs`, run against the live project as two real signed-in
+accounts, 13/13 — and twice in a row, because the first version of it passed once
+and then failed for ever on state it had left behind itself.
+
+It shares no code with the app on purpose. A validator built on the same client as
+the thing it validates can only prove the two agree with each other.
+
+What it actually asserts, and why in that shape:
+
+- **A is handed `[]` for B's plan, not a 403.** RLS filters rows rather than
+  refusing requests, so "no error" and "no access" look identical from outside. A
+  test asserting "not 403" passes against a database with no security at all.
+  Every isolation check counts rows, and the write check re-reads from B's side
+  rather than trusting the empty answer.
+- **A signed-out caller reads 0 rows from all five tables.** The check that
+  catches RLS left off a table entirely.
+- **Joining one household does not open another** — the thing that has to hold
+  before anyone outside this flat uses it.
+- **`rev` cannot jump.** A4 puts optimistic concurrency on `rev`, but a client
+  that picks the number can defeat its own guard silently; a trigger makes
+  `old.rev + 1` the only legal value.
+
+**Red-check.** Replacing the `household_state` select policy with `using (true)`
+— the plausible mistake, since it reads as "signed-in users only" — turned two
+checks red and printed the leaked row. Restored, green again. The suite has
+failed for the right reason at least once.
+
+### What went wrong on the way
+
+`0002_rls.sql` was run from a partial selection, and the editor reported that
+fragment's success. The result was RLS enabled on all five tables with zero
+policies: locked shut rather than hanging open, so it failed safe, but nothing in
+the "Success. No rows returned" said so. All three migrations are now idempotent
+from the top — `if not exists`, `or replace`, and a `do` block that drops the
+policies before recreating them — so a partial run is always repairable by
+running the file again. Recorded in `tasks/lessons.md`.
+
+### Still open
+
+- No way to delete a household. Nothing in 0002 grants `delete` on `households`,
+  so a household whose last member leaves becomes unreachable rather than
+  removed. Fine for now, wrong before strangers use it — Increment 5.
+- The two test accounts and their three households are still in the project.
+  Delete them when this increment is signed off.
 
 ## Increment 3 — sign in
 

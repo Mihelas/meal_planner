@@ -274,3 +274,55 @@ decision had moved underneath it.
 which decision moved it. If a decision did, update the validator *and* record why in a
 comment at the assertion. If none did, the code is wrong. Never relax an assertion without
 being able to point to the decision that invalidated it.
+
+---
+
+## Hand the user a command their shell can actually run
+
+**What went wrong.** I gave Nick a verifier command written for bash -- `cd ... && VAR=x node ...`
+-- and his terminal is PowerShell 5.1, which has neither `&&` nor an inline env-var prefix.
+It died on a parser error that had nothing to do with the thing being tested, and cost a
+round trip to work out.
+
+**Root cause.** I have a Bash tool, so I write bash without noticing. The user's Terminal
+panel is PowerShell. Those are two different shells and only one of them is his.
+
+**Rule.** A command in a fenced block is for the *user's* shell: PowerShell on this machine.
+`$env:VAR='x'; node ...`, `;` not `&&`. Better still, if the command needs environment
+variables or several steps, run it myself with the Bash tool and paste the output -- there is
+no reason to make him translate it.
+
+---
+
+## A validator that writes must be able to run twice
+
+**What went wrong.** `tools/verify-isolation.mjs` had account A redeem an invite into a
+household and then left it there. The run passed. The second run failed with "somebody is
+already in that seat" -- against a database that was working perfectly -- and for a moment I
+read a red line as a security finding.
+
+**Root cause.** The check asserted on an outcome that its own previous run had made
+impossible. Test state was shared, mutable and never cleaned up.
+
+**Rule.** Any check that mutates a shared backend starts by putting the world into the state
+it assumes, and ends by putting it back. `ensureHousehold` rather than `createHousehold`;
+leave the household at the end of the test that joined it; delete the invite rows written by
+hand. A validator that only passes on a clean database is a validator nobody will trust the
+second time, and the fault it reports will be its own.
+
+---
+
+## Partially-selected SQL reports success
+
+**What went wrong.** Three migrations "ran successfully" but the database had RLS enabled on
+all five tables and not one policy -- the editor had run only the selected fragment of
+`0002_rls.sql`, and reported that fragment's success.
+
+**Root cause.** Two compounding things: a SQL editor runs a selection when there is one, and
+`create policy` has no `or replace`, so a half-applied run could not be repaired by running
+the file again.
+
+**Rule.** Migrations meant to be pasted by hand must be idempotent from the top: `create
+table if not exists`, `create or replace function`, `drop trigger if exists` before each
+trigger, and a `do` block that drops the policies before recreating them. And never accept
+"it ran fine" as evidence that a security migration applied -- query `pg_policies` and count.
