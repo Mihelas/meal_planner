@@ -181,13 +181,48 @@ from the top — `if not exists`, `or replace`, and a `do` block that drops the
 policies before recreating them — so a partial run is always repairable by
 running the file again. Recorded in `tasks/lessons.md`.
 
+### Closed straight after -- 0004, 0005 and 0006
+
+Two gaps found by asking what happens at the end of a household's life rather
+than at the start, both shipped before Increment 3 rather than deferred:
+
+- **Nothing could delete a household** (0004). 0002 granted no `delete` on
+  `households`, so a household whose last member left kept its row, its invites
+  and its plan, with no policy able to reach any of it again. Fixed in two
+  halves, because a household ends two ways: `delete_household()` for the
+  deliberate way (owner only, refused while anybody else is still in it), and an
+  `after delete` trigger on `household_members` for the drifting-out way.
+  Verified at 17/17, the four new checks covering both halves and both refusals.
+- **No account could be deleted** (0005). `households.created_by` was
+  `on delete restrict`, which did not protect the household as intended -- it
+  forbade the account delete outright, surfacing as Supabase's opaque "Database
+  error deleting user". Now `set null`: `created_by` is provenance, ownership is
+  `household_members.role = 'owner'`, and no policy reads the column. 0001 was
+  corrected to match so a fresh database never carries the restrict.
+- **Still no account could be deleted** (0006), and this was the actual cause.
+  `enforce_rev()` is a `before update` trigger demanding rev advance by exactly
+  one, and `household_state.updated_by` is an FK with `on delete set null` -- so
+  deleting an account issues `update household_state set updated_by = null`,
+  which fires the trigger with doc and rev untouched and is refused, taking the
+  account deletion down with it. The rule now applies only to updates that
+  change doc or rev. An update that changes neither is either an FK action (no
+  JWT, let through) or a client hand-writing updated_by (refused), so the
+  attribution guarantee in 0002 survives.
+
+The verifier now also deletes the invites it writes -- nine had accumulated
+across runs, each an unredeemed code good until it expired.
+
 ### Still open
 
-- No way to delete a household. Nothing in 0002 grants `delete` on `households`,
-  so a household whose last member leaves becomes unreachable rather than
-  removed. Fine for now, wrong before strangers use it — Increment 5.
-- The two test accounts and their three households are still in the project.
-  Delete them when this increment is signed off.
+- Account deletion is the one thing the verifier structurally cannot check: a
+  publishable key cannot delete an `auth.users` row. Proven by hand instead --
+  both test accounts deleted successfully once 0006 was applied.
+- **The 18th check has never run.** `an update that pushes nothing is refused`
+  was written to cover 0006's new branch, but the test accounts it needs were
+  deleted in the same breath. Recreate two accounts and re-run the verifier at
+  the start of Increment 3, which needs working sign-in anyway. The other 17
+  were green before it was added.
+- iPhone/Safari install is still untried. Android is confirmed working.
 
 ## Increment 3 — sign in
 

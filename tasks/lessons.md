@@ -326,3 +326,49 @@ the file again.
 table if not exists`, `create or replace function`, `drop trigger if exists` before each
 trigger, and a `do` block that drops the policies before recreating them. And never accept
 "it ran fine" as evidence that a security migration applied -- query `pg_policies` and count.
+
+## A trigger on every update fires on foreign-key actions too
+
+**What went wrong.** Deleting a Supabase account failed with nothing but
+"Database error deleting user". Two wrong diagnoses before the right one: first
+an `on delete restrict` foreign key (real, fixed in 0005, not the cause of this),
+then finally `enforce_rev()` -- a `before update` trigger on `household_state`
+demanding that `rev` advance by exactly one. `updated_by` is a foreign key with
+`on delete set null`, so deleting an account issues
+`update household_state set updated_by = null`, which fires that trigger with
+`doc` and `rev` untouched. The trigger refused, and the refusal propagated all
+the way out to the account deletion.
+
+**Why.** I wrote the trigger thinking only about the write I had in mind -- a
+client pushing a new document -- and attached it to every update of the table.
+Postgres makes no distinction: referential actions, admin housekeeping and
+client pushes all arrive as the same UPDATE.
+
+**The rule.** When writing a trigger, enumerate every way a row of that table
+can be written, not just the one being designed for: client writes, FK
+`set null` / `set default` actions, cascades from parents, and anything run from
+the dashboard. Then scope the guard to the case it is actually guarding -- here,
+"doc or rev changed" -- and let the rest pass. And when an error names a
+statement that nothing in the application issues, that statement is a referential
+action; read it as such instead of looking for the code that wrote it.
+
+**How to see it at all.** Supabase's dashboard swallows the real error. Running
+the delete inside `begin; ... rollback;` in the SQL editor prints the constraint,
+the trigger and the generated statement, and removes nothing.
+
+## Never type a backslash inside a heredoc
+
+**What went wrong.** `t.count(anchor)` returned 0 for an anchor I had just read
+out of the file and that matched byte for byte, because the python source said
+`"\\ninvites"` and python received `"\ninvites"` -- a real newline. The
+lesson about this already existed; I wrote the backslash anyway.
+
+**Why.** Knowing the chain eats backslashes is not the same as noticing one in
+the string being typed. The previous lesson described the failure rather than
+giving a rule that triggers while writing.
+
+**The rule.** No `\` character inside a bash heredoc, ever. Build them:
+`chr(92)` for a backslash, `chr(10)` for a newline, f-strings to assemble. If an
+anchor needs an escape sequence, that is the signal to use the Edit tool instead.
+The `assert t.count(old) == 1` guard is what makes this survivable -- it has
+caught every one of these before anything was written.

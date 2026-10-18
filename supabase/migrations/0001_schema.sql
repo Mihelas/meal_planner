@@ -17,9 +17,12 @@ create table if not exists public.profiles (
 create table if not exists public.households (
   id         uuid primary key default gen_random_uuid(),
   name       text not null default 'Home',
-  -- restrict, not cascade: deleting the account that made a household must not
-  -- silently take the household and everyone else's plan with it.
-  created_by uuid not null references auth.users on delete restrict,
+  -- Provenance only -- ownership is household_members.role = 'owner', and no
+  -- policy reads this column. `set null` so deleting the creator's account
+  -- leaves the household standing for whoever else is in it; if nobody is, the
+  -- reaping trigger in 0004 takes it. (This said `restrict` until 0005, which
+  -- forbade deleting the account altogether. See that file.)
+  created_by uuid references auth.users on delete set null,
   created_at timestamptz not null default now()
 );
 
@@ -111,6 +114,18 @@ language plpgsql
 set search_path = ''
 as $$
 begin
+  -- Only a push is subject to the rule. updated_by is a foreign key onto
+  -- auth.users with `on delete set null`, so deleting an account issues an
+  -- update here with doc and rev untouched; enforcing the rule on that refuses
+  -- the account deletion outright. See 0006, which is where this was found.
+  if new.doc is not distinct from old.doc and new.rev = old.rev then
+    if auth.uid() is not null then
+      raise exception 'that update changes nothing; a push must advance rev'
+        using errcode = 'check_violation';
+    end if;
+    return new;
+  end if;
+
   if new.rev <> old.rev + 1 then
     raise exception 'rev must advance by exactly one (% -> %)', old.rev, new.rev
       using errcode = 'check_violation';

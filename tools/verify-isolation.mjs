@@ -202,6 +202,22 @@ await check('rev cannot jump', async () => {
   expect(r.status >= 400, `rev jumped to ${rev + 50} unchallenged`);
 });
 
+await check('an update that pushes nothing is refused', async () => {
+  // The branch that lets account deletion work. An FK action nulls updated_by
+  // without touching doc or rev, and enforce_rev has to let that through -- so
+  // it must still refuse the same shape of update when a client sends it, or
+  // updated_by becomes a field anybody in the household can hand-write.
+  const before = await api(`/rest/v1/household_state?household_id=eq.${HA}&select=rev,updated_by`, { token: A });
+  const seen = before.json[0];
+  const r = await api(`/rest/v1/household_state?household_id=eq.${HA}&rev=eq.${seen.rev}`, {
+    token: A, method: 'PATCH', prefer: 'return=representation',
+    body: { updated_by: null },
+  });
+  expect(r.status >= 400, `a client blanked updated_by: ${r.text.slice(0, 160)}`);
+  const after = await api(`/rest/v1/household_state?household_id=eq.${HA}&select=updated_by`, { token: A });
+  expect(after.json[0].updated_by === seen.updated_by, 'updated_by changed despite the refusal');
+});
+
 console.log('\ninvites');
 
 let joinCode = null;
@@ -253,9 +269,59 @@ await check('a nonsense code is refused the same way as a wrong one', async () =
     `the error distinguishes failure modes, which helps a guesser: ${r.text.slice(0, 160)}`);
 });
 
+console.log('');
+console.log('ending a household');
+
+await check('a plain member cannot delete the household', async () => {
+  // A is a member of C by now, not its owner.
+  const code = await rpc(B, 'create_invite', { target_household: HC, seat: 'guest' });
+  if (typeof code.json === 'string') await rpc(A, 'redeem_invite', { invite_code: code.json });
+  const r = await rpc(A, 'delete_household', { target_household: HC });
+  expect(r.status >= 400, `a member deleted somebody else's household: ${r.status}`);
+  const still = await api(`/rest/v1/household_state?household_id=eq.${HC}&select=rev`, { token: B });
+  expect(still.json?.length === 1, "C's plan is gone");
+});
+
+await check('an owner cannot delete it out from under the other member', async () => {
+  // A is in C, so B -- who owns it -- must be refused.
+  const r = await rpc(B, 'delete_household', { target_household: HC });
+  expect(r.status >= 400, 'B deleted a household A was still in');
+  expect(/leave first/i.test(r.text), `refused, but not for that reason: ${r.text.slice(0, 160)}`);
+});
+
+await check('the last member leaving takes the household with it', async () => {
+  // A throwaway of A's own, so nothing else depends on what happens to it.
+  const doomed = await ensureHousehold(A, 'Isolation test reaper', 'only-me');
+  const before = await api(`/rest/v1/household_state?household_id=eq.${doomed}&select=rev`, { token: A });
+  expect(before.json?.length === 1, 'the throwaway household was never set up');
+
+  await leaveHousehold(A, AID, doomed);
+
+  // From here the client cannot tell "deleted" from "invisible to me" -- RLS
+  // answers [] either way, and nobody is left who could see it. This asserts the
+  // observable half; the physical half needs a count in the SQL editor.
+  const after = await api(`/rest/v1/households?id=eq.${doomed}&select=id`, { token: A });
+  expect(after.json?.length === 0, 'A can still see a household it walked out of');
+});
+
+await check('an owner alone in a household can bin it', async () => {
+  const doomed = await ensureHousehold(A, 'Isolation test delete', 'only-me');
+  const r = await rpc(A, 'delete_household', { target_household: doomed });
+  expect(r.status < 300, `an owner alone could not delete: ${r.text.slice(0, 160)}`);
+  const after = await api(`/rest/v1/households?id=eq.${doomed}&select=id`, { token: A });
+  expect(after.json?.length === 0, 'the household survived its own deletion');
+});
+
 // --- put it back the way the isolation checks above expect to find it
 
 await leaveHousehold(A, AID, HC);
+
+// Invites are the one thing the checks above leave lying around: create_invite
+// writes a row per run, and an unredeemed code stays usable until it expires.
+// Nine of them turned up in the test database before this existed.
+for (const [token, hid] of [[A, HA], [B, HB], [B, HC]]) {
+  await api(`/rest/v1/household_invites?household_id=eq.${hid}`, { token, method: 'DELETE' });
+}
 
 // --- verdict
 
