@@ -24,6 +24,12 @@
 //   - **Signed out is a working state, not a locked door.** Nothing here is on
 //     the path to planning a week. The app is local-first and stays that way;
 //     an account is how the plan reaches the other phone, nothing more.
+//   - **A code, not only a link.** A corporate mailbox is why. Outlook Safe
+//     Links and scanners like it *fetch* a link before anyone sees it, which
+//     spends the one-time token; the human then clicks a link that is already
+//     dead and is told, truthfully and uselessly, that it has expired. A code
+//     cannot be spent by something that never types it -- and it involves no
+//     redirect at all, so the whole allow-list failure mode goes with it.
 
 export const SUPABASE_URL = 'https://xtcjakhoeehmrzdtzcvr.supabase.co';
 // Public by design (A5), and it ships in the HTML. Security is the RLS policies
@@ -33,9 +39,31 @@ export const SUPABASE_KEY = 'sb_publishable_nxZzg-3P0__Ki-DwbTe5lA_c5a1R2EG';
 // Its own key, deliberately not STORAGE_KEY. See the note at the top.
 export const SESSION_KEY = 'mealplanner.session';
 
+/**
+ * The address a code was last sent to, kept outside the app state for exactly
+ * the same reason as the session.
+ *
+ * It has to be written down rather than held in a closure: asking for a code
+ * means leaving for the mail app, and a phone will happily evict the page while
+ * you are gone. Coming back to a reloaded page that has forgotten who the code
+ * was for makes the code in your hand worthless.
+ */
+export const PENDING_KEY = 'mealplanner.signin';
+
+/**
+ * How long an address waits for its code.
+ *
+ * Generous on purpose, and not a claim about the code: Supabase decides when
+ * the code dies, and a dead one comes back with its own message. This only
+ * decides how long "resend" works without retyping an address, so the failure
+ * it prevents is a week-old sign-in box appearing out of nowhere.
+ */
+export const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
+
 export const OTP_PATH = '/auth/v1/otp';
 export const TOKEN_PATH = '/auth/v1/token';
 export const LOGOUT_PATH = '/auth/v1/logout';
+export const VERIFY_PATH = '/auth/v1/verify';
 
 /**
  * How early to renew. Two minutes covers a slow request on a train plus any
@@ -87,6 +115,15 @@ export function expiresInMs(session, now = nowMs()) {
   const at = session?.expiresAt;
   return Number.isFinite(at) ? at - now : 0;
 }
+
+/**
+ * A code as typed, as the server wants it.
+ *
+ * People copy `123 456` and `123-456` out of an email, and a phone keyboard
+ * adds a trailing space of its own accord. Rejecting those would be rejecting a
+ * correct code, so the separators come out here rather than being sent.
+ */
+export const normaliseCode = (code) => String(code ?? '').replace(/[\s-]/g, '');
 
 /** The tokens Supabase leaves in the fragment after an email link. */
 export function sessionFromHash(hash, now = nowMs()) {
@@ -148,21 +185,65 @@ export function sessionStore(win) {
   };
 }
 
+/** A pending sign-in that only lives as long as the tab. Used by the tests. */
+export function memoryPending(initial = null) {
+  let box = initial;
+  return {
+    get: (now = nowMs()) => (box && now - box.at < PENDING_TTL_MS ? box : null),
+    set: (v) => { box = v; },
+    clear: () => { box = null; },
+  };
+}
+
+/**
+ * The pending sign-in on its own localStorage key.
+ *
+ * Same tolerance as the session store: anything unreadable means "no code is on
+ * its way", because the app works signed out and an auth detail must never take
+ * the boot down with it.
+ */
+export function pendingStore(win) {
+  const ls = (() => { try { return win?.localStorage ?? null; } catch { return null; } })();
+  if (!ls) return memoryPending();
+  return {
+    get(now = nowMs()) {
+      try {
+        const raw = ls.getItem(PENDING_KEY);
+        if (!raw) return null;
+        const v = JSON.parse(raw);
+        if (!v?.email || !Number.isFinite(v.at)) return null;
+        if (now - v.at >= PENDING_TTL_MS) { ls.removeItem(PENDING_KEY); return null; }
+        return v;
+      } catch {
+        return null;
+      }
+    },
+    set(v) {
+      try { ls.setItem(PENDING_KEY, JSON.stringify(v)); } catch { /* full or private mode */ }
+    },
+    clear() {
+      try { ls.removeItem(PENDING_KEY); } catch { /* nothing to do about it */ }
+    },
+  };
+}
+
 // -------------------------------------------------------------- the caption
 /** What the account line says. One place, so the wording is consistent. */
-export function describeRemote(session, { sent = false, error = null } = {}, now = nowMs()) {
+export function describeRemote(session, { sent = false, sentTo = null, error = null } = {}, now = nowMs()) {
   const signedIn = Boolean(session?.accessToken);
   let text;
   if (signedIn) {
     text = `Signed in as ${session.email ?? 'this account'}`;
     if (isExpired(session, now)) text += ' — reconnecting';
   } else if (sent) {
-    text = 'Link sent — check your email on this device, and open it here.';
+    text = sentTo
+      ? `Sent to ${sentTo} — open the link on this device, or type the 6-digit code from the same email.`
+      : 'Sent — open the link on this device, or type the 6-digit code from the same email.';
   } else {
     text = 'Not signed in. The plan stays on this phone.';
   }
   if (error) text += ` ${error}`;
-  return { signedIn, sent, error, text };
+  return { signedIn, sent, sentTo, error, text };
 }
 
 // ------------------------------------------------------------------- errors
@@ -186,21 +267,29 @@ export function createRemote({
   win,
   fetch: doFetch = win?.fetch ? win.fetch.bind(win) : globalThis.fetch,
   session = sessionStore(win),
+  pending = pendingStore(win),
   url = SUPABASE_URL,
   key = SUPABASE_KEY,
   now = nowMs,
   onChange = () => {},
 } = {}) {
-  let sent = false;
   let error = null;
   // The single in-flight refresh. Several widgets asking for a token in one
   // tick must share one request: Supabase rotates the refresh token on use, so
   // parallel refreshes race to invalidate each other.
   let refreshing = null;
 
-  const changed = () => onChange(describeRemote(session.get(), { sent, error }, now()));
+  // `sent` is derived rather than held: the stored address IS the fact that a
+  // code is on its way, and deriving it means the code box is still there after
+  // the phone reloads the page while the mail app is open.
+  const waiting = () => pending.get(now());
+  const state = () => {
+    const p = waiting();
+    return describeRemote(session.get(), { sent: Boolean(p), sentTo: p?.email ?? null, error }, now());
+  };
+  const changed = () => onChange(state());
 
-  const store = (s) => { session.set(s); sent = false; changed(); };
+  const store = (s) => { session.set(s); pending.clear(); changed(); };
   const forget = () => { session.clear(); changed(); };
 
   async function call(path, { method = 'POST', body, token } = {}) {
@@ -229,7 +318,9 @@ export function createRemote({
   return {
     session: () => session.get(),
     signedIn: () => Boolean(session.get()?.accessToken),
-    status: () => describeRemote(session.get(), { sent, error }, now()),
+    status: state,
+    /** The address a code was sent to, or null. Read by the UI, not by the server. */
+    pendingEmail: () => waiting()?.email ?? null,
 
     /** Ask for a one-time link. Nothing is stored until the link is followed. */
     async signIn(email) {
@@ -250,9 +341,58 @@ export function createRemote({
         changed();
         return { ok: false, error };
       }
-      sent = true;
+      pending.set({ email: addr, at: now() });
       error = null;
       changed();
+      return { ok: true };
+    },
+
+    /**
+     * Trade the code from the email for a session.
+     *
+     * The address comes from storage rather than from the caller: it is the one
+     * the code was actually sent to, and asking the UI to pass it again is one
+     * more place for the two to disagree.
+     */
+    async verifyCode(code) {
+      const token = normaliseCode(code);
+      const addr = waiting()?.email ?? null;
+      if (!addr) {
+        error = 'Ask for a code first — there is no email address to check it against.';
+        changed();
+        return { ok: false, error };
+      }
+      if (!token) {
+        error = 'Type the code from the email.';
+        changed();
+        return { ok: false, error };
+      }
+      // Two types, in order, because the email a code arrives in depends on
+      // whether the account already existed: an established address gets the
+      // Magic Link template and verifies as 'email', a brand-new one gets
+      // Confirm signup. Rather than guess which, try the common case and fall
+      // back once. A wrong code costs one extra request; guessing wrong would
+      // cost a person their only way in.
+      let r = await call(VERIFY_PATH, { body: { email: addr, token, type: 'email' } });
+      if (!r.ok && !r.offline) {
+        const second = await call(VERIFY_PATH, { body: { email: addr, token, type: 'signup' } });
+        // Report the first failure if both fail: 'email' is the case that
+        // matches the email we told them to look for, so its message is the one
+        // that will make sense to read.
+        if (second.ok || second.offline) r = second;
+      }
+      // Offline keeps the address, for the same reason a failed refresh keeps
+      // the session: the code in their hand is probably still good.
+      if (r.offline) { error = OFFLINE; changed(); return { ok: false, error }; }
+      if (!r.ok) {
+        error = problemText(r.payload) ?? `That code was not accepted (${r.status}).`;
+        changed();
+        return { ok: false, error };
+      }
+      const next = normaliseSession(r.payload, now());
+      if (!next) { error = 'The server sent a session that could not be read.'; changed(); return { ok: false, error }; }
+      error = null;
+      store(next);
       return { ok: true };
     },
 
@@ -331,12 +471,26 @@ export function createRemote({
       return refreshing;
     },
 
+    /**
+     * Give up on a code and go back to the email box.
+     *
+     * Without this a mistyped address is a dead end for as long as the pending
+     * record lasts: the panel would keep offering a code box for an email that
+     * was never going to arrive, with no way back.
+     */
+    cancelSignIn() {
+      pending.clear();
+      error = null;
+      changed();
+      return { ok: true };
+    },
+
     /** Always clears the device. The server is told when it can be reached. */
     async signOut() {
       const s = session.get();
       if (s?.accessToken) await call(LOGOUT_PATH, { token: s.accessToken });
       error = null;
-      sent = false;
+      pending.clear();
       forget();
       return { ok: true };
     },

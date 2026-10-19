@@ -60,7 +60,9 @@ test('asking for a link sends one request and then tells you to go and read your
   assert.equal(fetch.calls.length, 1, `${fetch.calls.length} requests went out`);
   assert.match(fetch.calls[0].url, /\/auth\/v1\/otp$/);
   assert.equal(fetch.calls[0].body.email, 'someone@example.com');
-  assert.match(app.$('[data-panel="account"]').textContent, /check your email/i);
+  const panel = app.$('[data-panel="account"]').textContent;
+  assert.match(panel, /someone@example\.com/, 'it does not say where the email was sent');
+  assert.match(panel, /code/i, 'it does not mention the code, which is the half that survives a link scanner');
 });
 
 test('a send that fails offline says so, and the week is still there', async () => {
@@ -89,6 +91,60 @@ test('an email link signs you in, and the token does not stay in the address bar
   assert.match(app.$('[data-panel="account"]').textContent, /signed in/i);
   assert.equal(app.window.location.hash, '', 'the access token is still in the URL');
   assert.equal(app.saved().includes('rt-h'), false, 'the refresh token went into the saved week');
+});
+
+test('once a link is sent there is somewhere to type the code from the email', async () => {
+  const fetch = fakeFetch([
+    { status: 200, payload: {} },
+    { status: 200, payload: { access_token: 'at-c', refresh_token: 'rt-c', expires_in: 3600, user: { email: 'someone@example.com' } } },
+  ]);
+  const app = open(withFetch(fetch));
+  app.tab('settings');
+  app.set('#account-email', 'someone@example.com', 'input');
+  app.click('[data-act="account-signin"]');
+  await new Promise((r) => setTimeout(r, 0));
+
+  const box = app.$('#account-code');
+  assert.ok(box, 'no code box after a link was sent');
+  app.set('#account-code', '123456', 'input');
+  app.click('[data-act="account-verify"]');
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(fetch.calls.length, 2, `${fetch.calls.length} requests went out`);
+  assert.match(fetch.calls[1].url, /\/auth\/v1\/verify$/);
+  assert.deepEqual(fetch.calls[1].body, { email: 'someone@example.com', token: '123456', type: 'email' });
+  assert.match(app.$('[data-panel="account"]').textContent, /signed in/i);
+  assert.deepEqual(app.errors, []);
+});
+
+test('a code survives the page being thrown away while the mail app was open', async () => {
+  // The realistic failure: ask for a code on a phone, switch to the mail app,
+  // and come back to a page the OS has reloaded from the service worker. The
+  // address must still be there or the code in your hand is worthless.
+  const first = fakeFetch([{ status: 200, payload: {} }]);
+  const one = open(withFetch(first));
+  one.tab('settings');
+  one.set('#account-email', 'someone@example.com', 'input');
+  one.click('[data-act="account-signin"]');
+  await new Promise((r) => setTimeout(r, 0));
+  const carried = one.window.localStorage.getItem('mealplanner.signin');
+  assert.ok(carried, 'nothing was kept for after the reload');
+
+  const second = fakeFetch([{ status: 200, payload: { access_token: 'at-c', expires_in: 3600 } }]);
+  const two = open({
+    extend: (win) => {
+      win.fetch = second;
+      win.localStorage.setItem('mealplanner.signin', carried);
+    },
+  });
+  two.tab('settings');
+  assert.ok(two.$('#account-code'), 'the reloaded page forgot a code was on its way');
+  two.set('#account-code', '123456', 'input');
+  two.click('[data-act="account-verify"]');
+  await new Promise((r) => setTimeout(r, 0));
+
+  assert.equal(second.calls[0].body.email, 'someone@example.com');
+  assert.match(two.$('[data-panel="account"]').textContent, /signed in/i);
 });
 
 test('signing out returns to the signed-out panel and leaves the week alone', async () => {

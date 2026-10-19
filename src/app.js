@@ -97,6 +97,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   let sync = null;               // the shared-file syncer, created at the end of setup
   let remote = null;             // the account, created at the end of setup too
   let accountEmail = '';         // the sign-in box, mid-typing
+  let accountCode = '';          // the code-from-the-email box, mid-typing
   let updateReady = false;       // a newer build is sitting in the service worker's cache
 
   /**
@@ -983,10 +984,19 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
         ${st.signedIn ? `
           <div class="btn-row"><button class="btn ghost" data-act="account-signout">Sign out</button></div>
           <p class="small muted">Signing out changes nothing on this phone. The week, the list and the weigh-ins stay exactly where they are — it only stops this device talking to the server.</p>
+        ` : st.sent ? `
+          <label class="field"><span>Code from the email</span><input id="account-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="123456" value="${esc(accountCode)}"></label>
+          <div class="btn-row">
+            <button class="btn primary" data-act="account-verify">Sign in with this code</button>
+            <span class="spacer"></span>
+            <button class="btn ghost" data-act="account-resend">Send another</button>
+            <button class="btn ghost" data-act="account-cancel">Different address</button>
+          </div>
+          <p class="small muted">The link in that email works too, on this device. Use the code if the link says it has expired before you ever clicked it — some work email scans links on the way in, which spends them.</p>
         ` : `
           <label class="field"><span>Email</span><input id="account-email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" value="${esc(accountEmail)}"></label>
           <div class="btn-row"><button class="btn primary" data-act="account-signin">✉️ Email me a link</button></div>
-          <p class="small muted">No password. We send a link; open it <b>on this device</b> and you are in — a link opened somewhere else signs that browser in instead.</p>
+          <p class="small muted">No password. The email has both a link and a 6-digit code; either one signs in the browser it is used in, so use them <b>on this device</b>.</p>
         `}
         <p class="tiny faint">Signed out is a perfectly good way to use this. The week, the shopping list and the weigh-ins all live on this phone either way; an account is only how a plan reaches a second one.</p>
       </div>`;
@@ -1328,6 +1338,8 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     if (box) box.oninput = () => { importText = box.value; };
     const emailBox = root.querySelector('#account-email');
     if (emailBox) emailBox.oninput = () => { accountEmail = emailBox.value; };
+    const codeBox = root.querySelector('#account-code');
+    if (codeBox) codeBox.oninput = () => { accountCode = codeBox.value; };
 
     root.querySelectorAll('[data-del-recipe]').forEach((b) => b.onclick = () => {
       const s = store.state;
@@ -1530,7 +1542,13 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     // Both of these report through remote's onChange, which is render(); the
     // catch is only so a thrown promise cannot become an unhandled rejection.
     act('account-signin', () => { Promise.resolve(remote?.signIn(accountEmail)).catch(() => {}); });
-    act('account-signout', () => { Promise.resolve(remote?.signOut()).catch(() => {}); });
+    act('account-verify', () => { Promise.resolve(remote?.verifyCode(accountCode)).catch(() => {}); });
+    // Resending goes to the stored address, not to whatever is in the email box:
+    // that box is not even on screen in this state, so reading it would send the
+    // code somewhere the person never asked for.
+    act('account-resend', () => { Promise.resolve(remote?.signIn(remote?.pendingEmail())).catch(() => {}); });
+    act('account-cancel', () => { accountCode = ''; remote?.cancelSignIn(); });
+    act('account-signout', () => { accountCode = ''; Promise.resolve(remote?.signOut()).catch(() => {}); });
 
     act('sync-new', () => sync?.link({ create: true }));
     act('sync-open', () => sync?.link({ create: false }));

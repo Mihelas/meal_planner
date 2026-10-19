@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SESSION_KEY, REFRESH_SKEW_MS, OTP_PATH, TOKEN_PATH, LOGOUT_PATH,
+  SESSION_KEY, PENDING_KEY, REFRESH_SKEW_MS,
+  OTP_PATH, TOKEN_PATH, LOGOUT_PATH, VERIFY_PATH,
   normaliseSession, isExpired, expiresInMs, sessionFromHash,
-  memorySession, sessionStore, describeRemote, createRemote,
+  memorySession, sessionStore, pendingStore, describeRemote, createRemote,
 } from '../src/remote.js';
 import { createStore, snapshot, emptyState } from '../src/store.js';
 
@@ -173,6 +174,168 @@ test('being rate-limited is reported as something to wait out, not as a failure 
   const r = await remote({ fetch }).signIn('someone@example.com');
   assert.equal(r.ok, false);
   assert.match(r.error, /54|wait|moment/i, `unhelpful message: ${r.error}`);
+});
+
+// -------------------------------------------------- coming back by code
+//
+// A corporate mailbox is the reason this exists. Outlook Safe Links and every
+// other scanner of its kind *fetches* a link before a person ever sees it,
+// which spends a one-time token; the human then clicks an expired link and is
+// told, truthfully but uselessly, that it has expired. A code cannot be spent
+// by something that never types it. It also needs no redirect URL at all,
+// which removes the whole allow-list failure mode with it.
+
+test('asking for a link remembers the address, so a code can be checked after a reload', async () => {
+  const win = fakeWin();
+  const r = remote({ win, fetch: fakeFetch([jsonReply(200, {})]) });
+  await r.signIn('  SomeOne@Example.com ');
+  assert.equal(r.pendingEmail(), 'someone@example.com', 'the normalised address was not kept');
+  // The phone is very likely to be evicted from memory while the mail app is
+  // open, so this has to survive a reload rather than living in a closure.
+  assert.equal(pendingStore(win).get()?.email, 'someone@example.com');
+});
+
+test('a code is exchanged for a session, with the address it was sent to', async () => {
+  const fetch = fakeFetch([jsonReply(200, {}), jsonReply(200, wirePayload())]);
+  const r = remote({ fetch });
+  await r.signIn('someone@example.com');
+  const out = await r.verifyCode('123456');
+
+  assert.equal(out.ok, true, out.error);
+  assert.equal(fetch.calls.length, 2);
+  const call = fetch.calls[1];
+  assert.ok(call.url.endsWith(VERIFY_PATH), `posted to ${call.url}`);
+  assert.deepEqual(call.body, { email: 'someone@example.com', token: '123456', type: 'email' });
+  assert.equal(r.signedIn(), true);
+  assert.equal(r.session().accessToken, 'at-new');
+});
+
+test('a code is accepted however it was copied out of the email', async () => {
+  for (const typed of ['123 456', '123-456', ' 123456 ', '123456']) {
+    const fetch = fakeFetch([jsonReply(200, {}), jsonReply(200, wirePayload())]);
+    const r = remote({ fetch });
+    await r.signIn('someone@example.com');
+    await r.verifyCode(typed);
+    assert.equal(fetch.calls[1].body.token, '123456', `"${typed}" was sent as "${fetch.calls[1].body.token}"`);
+  }
+});
+
+test('a code from a brand-new account still works, whichever email carried it', async () => {
+  // An address Supabase has never seen gets the Confirm signup email, not the
+  // Magic Link one, and its code verifies under a different type. Nobody should
+  // have to know that to sign in for the first time.
+  const fetch = fakeFetch([
+    jsonReply(200, {}),
+    jsonReply(403, { msg: 'Token has expired or is invalid' }),
+    jsonReply(200, wirePayload()),
+  ]);
+  const r = remote({ fetch });
+  await r.signIn('someone@example.com');
+  const out = await r.verifyCode('123456');
+
+  assert.equal(out.ok, true, out.error);
+  assert.equal(r.signedIn(), true);
+  assert.deepEqual(fetch.calls.slice(1).map((c) => c.body.type), ['email', 'signup'],
+    'the fallback did not try the other kind of email');
+});
+
+test('a wrong code is refused in words, and leaves you signed out and able to retry', async () => {
+  const fetch = fakeFetch([
+    jsonReply(200, {}),
+    jsonReply(403, { error_code: 'otp_expired', msg: 'Token has expired or is invalid' }),
+  ]);
+  const r = remote({ fetch });
+  await r.signIn('someone@example.com');
+  const out = await r.verifyCode('000000');
+
+  assert.equal(out.ok, false);
+  assert.match(out.error, /expired|invalid/i, `unhelpful message: ${out.error}`);
+  assert.equal(fetch.calls.length, 3, 'both kinds of email should have been tried before giving up');
+  assert.equal(r.signedIn(), false);
+  // The address stays: the whole point is that they can ask for another code
+  // without typing their email again.
+  assert.equal(r.pendingEmail(), 'someone@example.com');
+});
+
+test('a code typed with no address asked for first is refused without a round trip', async () => {
+  const fetch = fakeFetch([jsonReply(200, wirePayload())]);
+  const r = remote({ fetch });
+  const out = await r.verifyCode('123456');
+  assert.equal(out.ok, false);
+  assert.match(out.error, /email|address/i, `unhelpful message: ${out.error}`);
+  assert.equal(fetch.calls.length, 0, 'a request went out with no address to verify against');
+});
+
+test('a blank code is refused without a round trip', async () => {
+  const fetch = fakeFetch([jsonReply(200, {}), jsonReply(200, wirePayload())]);
+  const r = remote({ fetch });
+  await r.signIn('someone@example.com');
+  const out = await r.verifyCode('   ');
+  assert.equal(out.ok, false);
+  assert.equal(fetch.calls.length, 1, 'only the sign-in request should have gone out');
+});
+
+test('verifying with no network keeps the address, because the code is still good', async () => {
+  let first = true;
+  const fetch = fakeFetch([({ url }) => {
+    if (first && url.endsWith(OTP_PATH)) { first = false; return jsonReply(200, {}); }
+    return offline();
+  }]);
+  const r = remote({ fetch });
+  await r.signIn('someone@example.com');
+  const out = await r.verifyCode('123456');
+
+  assert.equal(out.ok, false);
+  assert.match(out.error, /offline|connect|network/i, `unhelpful message: ${out.error}`);
+  assert.equal(r.pendingEmail(), 'someone@example.com', 'the address was thrown away over a dropped connection');
+});
+
+test('a code that works clears the address it was waiting on', async () => {
+  const win = fakeWin();
+  const r = remote({ win, fetch: fakeFetch([jsonReply(200, {}), jsonReply(200, wirePayload())]) });
+  await r.signIn('someone@example.com');
+  await r.verifyCode('123456');
+  assert.equal(r.pendingEmail(), null);
+  assert.equal(win.raw.has(PENDING_KEY), false, 'a stale sign-in was left in storage');
+});
+
+test('signing out forgets the address as well as the session', async () => {
+  const win = fakeWin();
+  const r = remote({ win, fetch: fakeFetch([jsonReply(200, {})]) });
+  await r.signIn('someone@example.com');
+  await r.signOut();
+  assert.equal(r.pendingEmail(), null);
+  assert.equal(win.raw.has(PENDING_KEY), false);
+});
+
+test('a mistyped address is not a dead end -- the code box can be abandoned', async () => {
+  const win = fakeWin();
+  const r = remote({ win, fetch: fakeFetch([jsonReply(200, {})]) });
+  await r.signIn('someoen@example.com');     // the classic typo
+  assert.equal(r.status().sent, true);
+
+  r.cancelSignIn();
+  assert.equal(r.pendingEmail(), null);
+  assert.equal(r.status().sent, false, 'the panel would still be asking for a code');
+  assert.equal(win.raw.has(PENDING_KEY), false);
+});
+
+test('an address waiting for a code expires on its own rather than lingering for ever', () => {
+  const win = fakeWin();
+  const box = pendingStore(win);
+  box.set({ email: 'someone@example.com', at: T0 });
+  assert.equal(box.get(T0 + 30 * 60_000)?.email, 'someone@example.com', 'half an hour in, it should still be there');
+  // Supabase expires the code itself; this only stops a week-old address being
+  // offered back as though a code were still on its way.
+  assert.equal(box.get(T0 + 25 * 60 * 60_000), null, 'a day later it should be gone');
+});
+
+test('the address waiting for a code never reaches the shared file either', () => {
+  const win = fakeWin();
+  pendingStore(win).set({ email: 'someone@example.com', at: T0 });
+  const text = JSON.stringify(snapshot(emptyState(), 'd1'));
+  assert.equal(text.includes('someone@example.com'), false, 'the address travelled into the shared file');
+  assert.notEqual(PENDING_KEY, 'mealplanner.v1');
 });
 
 // --------------------------------------------------- coming back from email
