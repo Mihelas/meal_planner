@@ -27,8 +27,7 @@ const S = defaultSettings();
 // Tombstones are pruned against the wall clock, so a stamp of `2000` is a removal from
 // 1970 and gets swept before any test can assert on it. Everything here hangs off now.
 const T = Date.now();
-const NICK = S.people[0].id;
-const GF = S.people[1].id;
+const P1 = S.people[0].id;
 
 /** A state carrying a week, saved at a chosen moment so merges are decidable. */
 const at = (state, savedAt) => ({ ...migrate(state), savedAt });
@@ -41,7 +40,7 @@ function shared() {
 }
 
 /** The recipe on a plate, for asserting that an edit survived. */
-const mealAt = (plan, day, slot, person = NICK) => {
+const mealAt = (plan, day, slot, person = P1) => {
   const v = plan.days[day][slot];
   return (isEntry(v) ? v : v[person])?.recipeId ?? null;
 };
@@ -65,7 +64,7 @@ test('a different week gets a different id', () => {
 
 test('editing a week does not change its id — it is still that week', () => {
   const plan = generateWeek(S, { banned: [] });
-  const swapped = swapMeal(plan, S, { banned: [] }, { day: 2, slot: 'dinner', person: NICK });
+  const swapped = swapMeal(plan, S, { banned: [] }, { day: 2, slot: 'dinner', person: P1 });
   assert.equal(swapped.id, plan.id, 'a swap must not make the week unrecognisable');
 });
 
@@ -75,7 +74,7 @@ test('saving stamps the cells a change really touched, and no others', () => {
   const st = createStore(undefined);
   st.load();
   st.save({ ...base, sync: { ...base.sync, device: 'laptop' } }, { at: 1000 });
-  const swapped = swapMeal(st.state.plan, S, st.state.memory, { day: 2, slot: 'dinner', person: NICK });
+  const swapped = swapMeal(st.state.plan, S, st.state.memory, { day: 2, slot: 'dinner', person: P1 });
   const after = st.save({ ...st.state, plan: swapped }, { at: 2000 });
 
   const touched = [];
@@ -122,7 +121,7 @@ test('her swap and his off-plan log both survive the same merge', () => {
   const { plan, base } = shared();
 
   // She swaps Tuesday dinner on her phone.
-  const hers = swapMeal(plan, S, { banned: [] }, { day: 2, slot: 'dinner', person: NICK });
+  const hers = swapMeal(plan, S, { banned: [] }, { day: 2, slot: 'dinner', person: P1 });
   const phone = at({ ...base, plan: hers }, 2000);
 
   // He logs a burger for Monday on his laptop, a minute later.
@@ -137,7 +136,7 @@ test('her swap and his off-plan log both survive the same merge', () => {
     const merged = mergeStates(x, y);
     assert.equal(mealAt(merged.plan, 2, 'dinner'), mealAt(hers, 2, 'dinner'),
       'her Tuesday swap was thrown away');
-    assert.ok(dayTotals(merged.plan.days[1])[NICK].kcal >= 1100,
+    assert.ok(dayTotals(merged.plan.days[1])[P1].kcal >= 1100,
       'his Monday burger was thrown away');
   }
 });
@@ -146,8 +145,8 @@ test('two edits to the same meal keep the later one, and say so', () => {
   // Not a CRDT and not pretending to be: the same plate edited twice resolves to one
   // of the two. What matters is that it resolves by time and not by who synced last.
   const { plan, base } = shared();
-  const first = swapMeal(plan, S, { banned: [] }, { day: 3, slot: 'lunch', person: NICK });
-  const second = swapMeal(first, S, { banned: [] }, { day: 3, slot: 'lunch', person: NICK });
+  const first = swapMeal(plan, S, { banned: [] }, { day: 3, slot: 'lunch', person: P1 });
+  const second = swapMeal(first, S, { banned: [] }, { day: 3, slot: 'lunch', person: P1 });
   const a = at({ ...base, plan: first }, 2000);
   const b = at({ ...base, plan: second }, 3000);
   stamp(a.plan, plan, 2000, 'phone');
@@ -279,7 +278,7 @@ test('a concurrent write is merged into the file, not dropped on top of it', asy
   await b.link({ create: true });
 
   // Then the edits land locally, and both debounces fire.
-  her.save({ ...her.state, plan: swapMeal(plan, S, { banned: [] }, { day: 2, slot: 'dinner', person: NICK }),
+  her.save({ ...her.state, plan: swapMeal(plan, S, { banned: [] }, { day: 2, slot: 'dinner', person: P1 }),
     memory: { ...her.state.memory, banned: ['d-huehner-ramen'] } }, { at: 4000 });
   his.save({ ...his.state, plan: logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 1100 }),
     memory: { ...his.state.memory, favourites: ['l-huehner-bowl'] } }, { at: 5000 });
@@ -289,7 +288,7 @@ test('a concurrent write is merged into the file, not dropped on top of it', asy
   const final = JSON.parse(file.text);
   assert.deepEqual(final.memory.banned, ['d-huehner-ramen'], 'her ban was overwritten');
   assert.deepEqual(final.memory.favourites, ['l-huehner-bowl'], 'his favourite was lost');
-  assert.ok(dayTotals(final.plan.days[1])[NICK].kcal >= 1100, 'his Monday log was lost');
+  assert.ok(dayTotals(final.plan.days[1])[P1].kcal >= 1100, 'his Monday log was lost');
 });
 
 test('the shared file is re-read before being written, every time', async () => {
@@ -391,14 +390,14 @@ test('a plan without stamps merges the way v2 did, rather than throwing a wobbly
   // last-write-wins then, not empty.
   const { plan, base } = shared();
   const a = at({ ...base, plan }, 2000);
-  const swapped = swapMeal(plan, S, { banned: [] }, { day: 4, slot: 'dinner', person: NICK });
+  const swapped = swapMeal(plan, S, { banned: [] }, { day: 4, slot: 'dinner', person: P1 });
   const b = at({ ...base, plan: swapped }, 3000);
   const merged = mergeStates(a, b);
   assert.equal(mealAt(merged.plan, 4, 'dinner'), mealAt(swapped, 4, 'dinner'));
 });
 
 test('planAddress is stable, because it is the key the whole merge turns on', () => {
-  assert.equal(planAddress(2, 'dinner', NICK), `2|dinner|${NICK}`);
+  assert.equal(planAddress(2, 'dinner', P1), `2|dinner|${P1}`);
   assert.equal(planAddress(0, 'breakfast', null), '0|breakfast|*');
 });
 

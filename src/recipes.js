@@ -1,8 +1,9 @@
 // The recipe library.
 //
 // Conventions that the planner and the shopping list depend on:
-//   - kcal / protein are PER PORTION, where 1 portion ~= Nick's slot budget.
-//     Partner eats ~0.68 of a portion from the same pot (see targets.portionRatio).
+//   - kcal / protein are PER PORTION, where 1 portion ~= the first person's slot
+//     budget. The second eats ~0.68 of a portion from the same pot, derived
+//     rather than fixed (see targets.portionRatio).
 //   - Ingredient quantities are also PER PORTION, so the shopping list is just
 //     qty x (sum of servings across the week). Nothing here is "per 4 people".
 //   - Product names are DEUTSCH, because that is what is on the shelf in Rewe /
@@ -2037,11 +2038,11 @@ const DINNERS = [
   // ---- Shiba's Kitchen, October 2026 --------------------------------------
   // Pakistani and Palestinian home cooking, re-expressed as our own rows. Two
   // things changed on the way in. The source cooks for 4 at restaurant
-  // portions, so quantities are re-cut per portion against Nick's dinner
-  // budget. And almost every vegetarian dish there is vegetables plus starch,
-  // which lands around 15 g of protein -- short of our own 25 g dinner floor --
-  // so each one gained a legume, paneer, tofu or dairy. Those additions are
-  // ours, not the source's.
+  // portions, so quantities are re-cut per portion against the first person's
+  // dinner budget. And almost every vegetarian dish there is vegetables plus
+  // starch, which lands around 15 g of protein -- short of our own 25 g dinner
+  // floor -- so each one gained a legume, paneer, tofu or dairy. Those
+  // additions are ours, not the source's.
   {
     id: 'd-palak-paneer', name: 'Palak paneer',
     slot: 'dinner', kcal: 665, protein: 34, minutes: 25, cuisine: 'asian',

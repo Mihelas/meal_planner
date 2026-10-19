@@ -231,7 +231,7 @@ test('the write counter and the sync time are kept, so the panel can prove it wo
   const { s, st, win } = sync();
   await s.link({ create: true });
   const writes = st.state.sync.writes;
-  st.save({ ...st.state, weights: [{ date: '2026-01-01', nick: 100 }] });
+  st.save({ ...st.state, weights: [{ date: '2026-01-01', person1: 100 }] });
   s.schedule();
   await win.tick();
   assert.equal(st.state.sync.writes, writes + 1);

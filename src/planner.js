@@ -5,7 +5,8 @@
 //
 //   1. Dinner is chosen first and cooked big. Tomorrow's lunch is the same pot.
 //      That is the anti-pizza mechanism: at 12:30 the food already exists.
-//   2. Portions, not different meals. She eats ~0.68 of his portion off the same tray.
+//   2. Portions, not different meals. The second person eats ~0.68 of the first's
+//      portion off the same tray -- derived, see targets.portionRatio.
 //   3. The day mode decides lunch. Office -> a canteen card with what to pick,
 //      because there is no kitchen. WFH / together -> the leftovers.
 //
@@ -95,11 +96,24 @@ const SNACK_SPLIT = { snackAfternoon: 0.45, snackEvening: 0.55 };
 const WEEKDAYS = [0, 1, 2, 3, 4];
 const POST_FOOTBALL_MAX_MINUTES = 10;
 
-export const DAY_MODE_LABEL = {
-  wfh: 'Nick @ home, she out',
-  office: 'Nick @ office (Kantine)',
-  together: 'Both @ home',
-};
+/**
+ * The caption under a day's mode buttons.
+ *
+ * A function rather than the constant this used to be, because the captions
+ * name the people and a household names its own. It was a hardcoded object
+ * naming one particular household's members, which read as nonsense for every
+ * other household that installed the app.
+ *
+ * Index 0 is the one who goes to the canteen, matching generateWeek below:
+ * `office` replaces that person's lunch and nobody else's.
+ */
+export function dayModeLabel(settings, mode) {
+  const [a, b] = settings?.people ?? DEFAULT_PEOPLE;
+  if (mode === 'wfh') return `${a.name} @ home, ${b.name} out`;
+  if (mode === 'office') return `${a.name} @ office (Kantine)`;
+  if (mode === 'together') return 'Both @ home';
+  return '';
+}
 
 /** Canteen cards: what to build a tray out of, rather than a recipe we cannot cook. */
 const CANTEEN_CARDS = [
@@ -239,8 +253,8 @@ function budgetTable(settings) {
 // ----------------------------------------------------------------- scoring
 /**
  * How well a recipe fits a slot: calorie miss plus a penalty for falling short
- * on protein. Lower is better. Scored against Nick, since he is the reference
- * portion and hers is derived from the same pot.
+ * on protein. Lower is better. Scored against the first person, who is the
+ * reference portion; the second's is derived from the same pot.
  */
 function fitScore(recipe, kcalBudget, proteinBudget) {
   const n = portionsFor(recipe, kcalBudget);
@@ -672,9 +686,10 @@ export function generateWeek(settings, memory = { banned: [] }, previous = null)
 
   const kb = (i, slot) => budgets[i].kcal[slot];
   const pb = (i, slot) => budgets[i].protein[slot];
-  const nickId = settings.people[0].id;
-  const gfId = settings.people[1].id;
-  const both = [nickId, gfId];
+  // Positional, not named: index 0 is the reference portion and the canteen-goer.
+  const refId = settings.people[0].id;
+  const otherId = settings.people[1].id;
+  const both = [refId, otherId];
 
   // What we have learned, folded into every choose() below.
   const opts = {
@@ -737,12 +752,13 @@ export function generateWeek(settings, memory = { banned: [] }, previous = null)
   /**
    * This slot's protein share for one person, plus whatever their day is behind.
    *
-   * Tracked per person rather than off Nick alone, because his portion and hers
-   * are not the same multiple of the same dish: a kcal-dense, protein-light
-   * recipe portioned down to her budget loses more protein than it loses calories,
-   * so she can finish under her floor on a day he clears his.
+   * Tracked per person rather than off the reference portion alone, because the
+   * two portions are not the same multiple of the same dish: a kcal-dense,
+   * protein-light recipe cut down to the smaller budget loses more protein than
+   * it loses calories, so the smaller eater can finish under their floor on a
+   * day the reference portion clears its own.
    */
-  const askProtein = (i, slot, person = nickId) => {
+  const askProtein = (i, slot, person = refId) => {
     const share = pb(i, slot)[person];
     if (!meatless(i)) return share;
     const behind = FILLED_BEFORE[slot]
@@ -838,7 +854,7 @@ export function generateWeek(settings, memory = { banned: [] }, previous = null)
     // Monday pot. Hence `always` -- the debt is still zero when the pot is picked,
     // but the shortfall it would cause is not.
     pool = meetingAsk(pool, i, 'dinner', both, batching && cookDayFor(i, sessions) === i);
-    const pick = choose(pool, kb(i, 'dinner')[nickId], dinnerAsk, dinnerRand, memory, opts);
+    const pick = choose(pool, kb(i, 'dinner')[refId], dinnerAsk, dinnerRand, memory, opts);
     if (!pick) {
       warnings.push(`No dinner left for ${d.name} — too many recipes are banned or locked. Un-ban a few in Settings.`);
       d.dinner = guidanceEntry('eat-out', EAT_OUT_CARDS[0], kb(i, 'dinner'), pb(i, 'dinner'), both, 'dinner');
@@ -887,7 +903,7 @@ export function generateWeek(settings, memory = { banned: [] }, previous = null)
           kb(i, 'lunch'), pb(i, 'lunch'), [person], 'lunch');
         continue;
       }
-      if (person === nickId && d.mode === 'office') {
+      if (person === refId && d.mode === 'office') {
         d.lunch[person] = guidanceEntry('canteen', CANTEEN_CARDS[i % CANTEEN_CARDS.length],
           kb(i, 'lunch'), pb(i, 'lunch'), [person], 'lunch');
         continue;
@@ -934,7 +950,7 @@ export function generateWeek(settings, memory = { banned: [] }, previous = null)
     if (!pool.length) pool = relax(i, 'breakfast');
     const bAsk = askProtein(i, 'breakfast');
     pool = meetingAsk(pool, i, 'breakfast', both);
-    const pick = choose(pool, kb(i, 'breakfast')[nickId], bAsk, bRand, memory, opts);
+    const pick = choose(pool, kb(i, 'breakfast')[refId], bAsk, bRand, memory, opts);
     if (!pick) {
       warnings.push('Every breakfast is banned. Un-ban at least one in Settings.');
       d.breakfast = guidanceEntry('canteen', CANTEEN_CARDS[1], kb(i, 'breakfast'), pb(i, 'breakfast'), both, 'breakfast');
@@ -963,7 +979,7 @@ export function generateWeek(settings, memory = { banned: [] }, previous = null)
       if (!pool.length) pool = relax(i, key);
       const sAsk = askProtein(i, key);
       pool = meetingAsk(pool, i, key, both);
-      const pick = choose(pool, kb(i, key)[nickId], sAsk, sRand, memory, opts);
+      const pick = choose(pool, kb(i, key)[refId], sAsk, sRand, memory, opts);
       if (!pick) {
         warnings.push(`No snack left for ${d.name} ${key === 'snackEvening' ? 'evening' : 'afternoon'} — every snack recipe is banned. Un-ban a few, or the night cravings win.`);
         d[key] = guidanceEntry('eat-out', 'Nothing planned: keep a High-Protein-Pudding or a Harzer in the fridge as the fallback. A banned list this long will cost you the evening.',
@@ -987,8 +1003,8 @@ export function generateWeek(settings, memory = { banned: [] }, previous = null)
 /**
  * Does tomorrow's lunch want to be tonight's leftovers? True unless tomorrow is
  * past the end of the week, tomorrow's lunch is a booked meal out, or everyone
- * eating tomorrow is somewhere without a fridge (Nick at the canteen, and she is
- * the only other eater).
+ * eating tomorrow is somewhere without a fridge (the canteen-goer at the
+ * canteen, with nobody else eating in).
  */
 function needsLeftoverTomorrow(settings, i) {
   const t = i + 1;

@@ -90,15 +90,15 @@ test('eat-out and canteen meals buy nothing', () => {
 });
 
 test('a leftover lunch does not buy the ingredients twice', () => {
-  const day = plan.days.findIndex((d) => d.lunch.nick.kind === 'leftover');
+  const day = plan.days.findIndex((d) => d.lunch.person1.kind === 'leftover');
   assert.ok(day > 0, 'the fixture has no leftover lunch to check');
-  const id = plan.days[day].lunch.nick.recipeId;
+  const id = plan.days[day].lunch.person1.recipeId;
   const r = recipeById(id);
   const portions = portionsByRecipe(plan).get(id);
   const ing = r.ingredients[0];
   const line = flat.find((i) => i.item === ing.item && i.rawUnit === ing.unit);
   const others = plan.days.flatMap((d) => [d.breakfast, d.dinner, d.snackAfternoon, d.snackEvening,
-    d.lunch.nick, d.lunch.partner])
+    d.lunch.person1, d.lunch.person2])
     .filter((e) => e.recipeId && recipeById(e.recipeId).ingredients.some((x) => x.item === ing.item));
   // If this ingredient is unique to this recipe, the line must equal exactly its portions.
   if (others.every((e) => e.recipeId === id)) {

@@ -17,8 +17,8 @@ import { defaultSettings, generateWeek, portionsByRecipe } from '../src/planner.
 import { recipeById } from '../src/recipes.js';
 
 const S = defaultSettings();
-const NICK = S.people[0].id;
-const GF = S.people[1].id;
+const P1 = S.people[0].id;
+const P2 = S.people[1].id;
 
 /** What a lunch entry IS, for the purpose of "is this the same meal?" */
 const identity = (e) => `${e.kind}|${e.recipeId ?? e.note ?? ''}`;
@@ -60,9 +60,9 @@ test('the Sunday that started this: a weekend with nothing to carry still shares
   const settings = ARRANGEMENTS['both meals out at dinner'];
   for (let seed = 1; seed <= 40; seed++) {
     const sunday = generateWeek({ ...settings, seed }, { banned: [] }).days[6];
-    assert.equal(sunday.lunch[NICK].kind, 'recipe', `seed ${seed}: Sunday lunch is not a cooked meal`);
-    assert.equal(sunday.lunch[NICK].recipeId, sunday.lunch[GF].recipeId,
-      `seed ${seed}: Sunday cooks ${sunday.lunch[NICK].recipeId} and ${sunday.lunch[GF].recipeId}`);
+    assert.equal(sunday.lunch[P1].kind, 'recipe', `seed ${seed}: Sunday lunch is not a cooked meal`);
+    assert.equal(sunday.lunch[P1].recipeId, sunday.lunch[P2].recipeId,
+      `seed ${seed}: Sunday cooks ${sunday.lunch[P1].recipeId} and ${sunday.lunch[P2].recipeId}`);
   }
 });
 
@@ -73,33 +73,33 @@ test('office days still send him to the canteen and leave her a real lunch', () 
   const office = plan.days.filter((d) => d.mode === 'office');
   assert.ok(office.length >= 2, 'the fixture week has no office days');
   for (const d of office) {
-    assert.equal(d.lunch[NICK].kind, 'canteen', `${d.name}: he is not at the canteen`);
-    assert.notEqual(d.lunch[GF].kind, 'canteen', `${d.name}: she was sent to his canteen`);
+    assert.equal(d.lunch[P1].kind, 'canteen', `${d.name}: he is not at the canteen`);
+    assert.notEqual(d.lunch[P2].kind, 'canteen', `${d.name}: she was sent to his canteen`);
   }
 });
 
 test('a shared lunch is still portioned to each of them separately', () => {
-  // One recipe, two appetites. He is 102 kg and she is 70 kg, so the same dish
+  // One recipe, two appetites. The two slot budgets differ, so the same dish
   // must not arrive as the same amount of food.
   const settings = ARRANGEMENTS['both meals out at dinner'];
   const sunday = generateWeek({ ...settings, seed: 7 }, { banned: [] }).days[6];
-  const his = sunday.lunch[NICK];
-  const hers = sunday.lunch[GF];
+  const his = sunday.lunch[P1];
+  const hers = sunday.lunch[P2];
   assert.equal(his.recipeId, hers.recipeId);
-  assert.ok(his.portions[NICK] > 0 && hers.portions[GF] > 0, 'someone is eating nothing');
-  assert.ok(his.portions[NICK] >= hers.portions[GF],
-    `he gets ${his.portions[NICK]} and she gets ${hers.portions[GF]}`);
+  assert.ok(his.portions[P1] > 0 && hers.portions[P2] > 0, 'someone is eating nothing');
+  assert.ok(his.portions[P1] >= hers.portions[P2],
+    `he gets ${his.portions[P1]} and she gets ${hers.portions[P2]}`);
   // Each entry carries only its own eater, which is what the plate UI reads.
-  assert.deepEqual(Object.keys(his.portions), [NICK]);
-  assert.deepEqual(Object.keys(hers.portions), [GF]);
+  assert.deepEqual(Object.keys(his.portions), [P1]);
+  assert.deepEqual(Object.keys(hers.portions), [P2]);
 });
 
 test('sharing a lunch buys it once, for two', () => {
   const settings = ARRANGEMENTS['both meals out at dinner'];
   const plan = generateWeek({ ...settings, seed: 7 }, { banned: [] });
   const sunday = plan.days[6];
-  const id = sunday.lunch[NICK].recipeId;
-  const wanted = sunday.lunch[NICK].portions[NICK] + sunday.lunch[GF].portions[GF];
+  const id = sunday.lunch[P1].recipeId;
+  const wanted = sunday.lunch[P1].portions[P1] + sunday.lunch[P2].portions[P2];
   // Only Sunday is in the slice, so the whole demand for that recipe is theirs.
   const only = portionsByRecipe({ ...plan, days: [sunday] });
   assert.equal(only.get(id), wanted,
@@ -110,8 +110,8 @@ test('variety across the week survives: no lunch is cooked fresh twice', () => {
   for (const [label, settings] of Object.entries(ARRANGEMENTS)) {
     const plan = generateWeek({ ...settings, seed: 3 }, { banned: [] });
     const fresh = plan.days
-      .filter((d) => d.lunch[GF]?.kind === 'recipe')
-      .map((d) => d.lunch[GF].recipeId);
+      .filter((d) => d.lunch[P2]?.kind === 'recipe')
+      .map((d) => d.lunch[P2].recipeId);
     assert.equal(new Set(fresh).size, fresh.length, `${label}: a fresh lunch repeats - ${fresh}`);
   }
 });
@@ -121,17 +121,17 @@ test('if one of them has a lunch locked, the other joins it', () => {
   // along rather than becoming a second thing to cook.
   const settings = ARRANGEMENTS['both meals out at dinner'];
   const first = generateWeek({ ...settings, seed: 11 }, { banned: [] });
-  const pinned = first.days[6].lunch[NICK].recipeId;
+  const pinned = first.days[6].lunch[P1].recipeId;
   const previous = {
     ...first,
     days: first.days.map((d, i) => (i === 6
-      ? { ...d, lunch: { ...d.lunch, [NICK]: { ...d.lunch[NICK], locked: true } } }
+      ? { ...d, lunch: { ...d.lunch, [P1]: { ...d.lunch[P1], locked: true } } }
       : d)),
   };
   // A different seed, so an unchanged pick cannot be a coincidence.
   const next = generateWeek({ ...settings, seed: 12 }, { banned: [] }, previous);
-  assert.equal(next.days[6].lunch[NICK].recipeId, pinned, 'the locked lunch moved');
-  assert.equal(next.days[6].lunch[GF].recipeId, pinned, 'she is cooking a second lunch');
+  assert.equal(next.days[6].lunch[P1].recipeId, pinned, 'the locked lunch moved');
+  assert.equal(next.days[6].lunch[P2].recipeId, pinned, 'she is cooking a second lunch');
 });
 
 test('a shared lunch is still a lunch: packable or no-cook, and inside the cap', () => {

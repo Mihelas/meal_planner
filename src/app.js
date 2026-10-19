@@ -7,7 +7,7 @@
 // stale-DOM bugs for free.
 
 import {
-  DAYS, DAY_MODES, DAY_MODE_LABEL, SLOT_KEYS, defaultSettings, generateWeek,
+  DAYS, DAY_MODES, dayModeLabel, SLOT_KEYS, defaultSettings, generateWeek,
   dayTotals, weekTotals, cookPortions, regenerateSlot, isEntry, entriesIn, targetFor,
   OFF_PLAN_PRESETS, logOffPlan, dayHasOffPlan, weekLedger, rebalanceWeek, clearAdjust,
   reflow, recordKept, recordSwapAway, learned, cookSessions, planMonth, MAX_DAY_ADJUST,
@@ -328,7 +328,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       <article class="card day ${football ? 'is-football' : ''}">
         <header>
           <div class="day-title"><h2>${day.name}</h2>
-            <span class="tiny faint">${esc(DAY_MODE_LABEL[day.mode])}</span></div>
+            <span class="tiny faint">${esc(dayModeLabel(s.settings, day.mode))}</span></div>
           <div class="modes no-print" role="group" aria-label="${day.name} mode">
             ${DAY_MODES.map((m) => `<button data-mode="${m}" data-day="${day.index}" aria-pressed="${day.mode === m}">${MODE_SHORT[m]}</button>`).join('')}
           </div>

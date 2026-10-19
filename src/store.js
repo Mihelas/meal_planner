@@ -106,7 +106,7 @@ export function emptyState() {
     plan: null,
     bought: {},          // shopping item id -> true when it is already in the trolley
     itemShop: {},        // shopping item id -> shop id, overriding the aisle default
-    weights: [],         // [{ date: 'YYYY-MM-DD', nick: 102, partner: 70 }]
+    weights: [],         // [{ date: 'YYYY-MM-DD', person1: 100, person2: 65 }]
     ui: { tab: 'week' },
     sync: { name: null, at: null, writes: 0, device: null },
   };

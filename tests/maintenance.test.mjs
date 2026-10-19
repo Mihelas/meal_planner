@@ -7,9 +7,9 @@ import {
 } from '../src/targets.js';
 import { defaultSettings, generateWeek, dayTotals, targetFor } from '../src/planner.js';
 
-const NICK = DEFAULT_PEOPLE.find((p) => p.id === 'nick');
-const GF = DEFAULT_PEOPLE.find((p) => p.id === 'partner');
-const maintainer = { ...NICK, goal: 'maintain' };
+const P1 = DEFAULT_PEOPLE.find((p) => p.id === 'person1');
+const P2 = DEFAULT_PEOPLE.find((p) => p.id === 'person2');
+const maintainer = { ...P1, goal: 'maintain' };
 
 // ---------- The switch ----------
 test('there are exactly two goals, so the UI is a toggle', () => {
@@ -17,7 +17,7 @@ test('there are exactly two goals, so the UI is a toggle', () => {
 });
 
 test('a person with no goal set is losing — the app was built for that', () => {
-  assert.equal(isMaintaining({ ...NICK, goal: undefined }), false);
+  assert.equal(isMaintaining({ ...P1, goal: undefined }), false);
   assert.equal(isMaintaining(undefined), false);
   assert.equal(isMaintaining(maintainer), true);
 });
@@ -29,7 +29,7 @@ test('maintaining means no deficit at all, not a smaller one', () => {
 
 test('maintaining eats back the whole exercise burn, because there is nothing to take off', () => {
   assert.equal(eatBackFraction(maintainer), 1);
-  assert.equal(eatBackFraction(NICK), EAT_BACK_FRACTION);
+  assert.equal(eatBackFraction(P1), EAT_BACK_FRACTION);
   assert.equal(dayTarget(maintainer, { exerciseKcal: 600 }), maintenance(maintainer) + 600);
 });
 
@@ -39,13 +39,13 @@ test('a maintenance week really loses nothing — including football day', () =>
 });
 
 test('switching to maintenance gives back the deficit (plus the rounding it was hiding)', () => {
-  const back = dailyTarget(maintainer) - dailyTarget(NICK);
-  assert.ok(Math.abs(back - deficit(NICK)) <= 50, `${back} kcal back, deficit is ${deficit(NICK)}`);
-  assert.ok(back >= deficit(NICK), 'never hand back less than the deficit that was applied');
+  const back = dailyTarget(maintainer) - dailyTarget(P1);
+  assert.ok(Math.abs(back - deficit(P1)) <= 50, `${back} kcal back, deficit is ${deficit(P1)}`);
+  assert.ok(back >= deficit(P1), 'never hand back less than the deficit that was applied');
 });
 
 test('maintenance still respects the safety floor for a very small person', () => {
-  const tiny = { ...GF, goal: 'maintain', weightKg: 40, heightCm: 140, age: 70, activityFactor: 1.2 };
+  const tiny = { ...P2, goal: 'maintain', weightKg: 40, heightCm: 140, age: 70, activityFactor: 1.2 };
   assert.ok(dailyTarget(tiny) >= SAFE_FLOOR_KCAL.female);
 });
 
@@ -69,11 +69,11 @@ test('maintenance is suggested once, and not to someone already maintaining', ()
 });
 
 test('the profile carries the goal and how far there is still to go', () => {
-  const p = profile(NICK);
+  const p = profile(P1);
   assert.equal(p.goal, 'lose');
   assert.equal(p.goalWeightKg, 90);
-  assert.equal(p.toGo, 12);
-  assert.equal(profile({ ...NICK, goalWeightKg: null }).toGo, null);
+  assert.equal(p.toGo, 10);   // 100 kg now, 90 kg the first target
+  assert.equal(profile({ ...P1, goalWeightKg: null }).toGo, null);
   assert.equal(profile(maintainer).weeklyLossKg, 0);
 });
 

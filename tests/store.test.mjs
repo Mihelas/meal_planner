@@ -46,7 +46,7 @@ test('everything survives a reload — that is the whole point of memory', () =>
     memory: { banned: ['s-popcorn'], favourites: ['d-puten-chili'] },
     settings: { ...settings, dayModes: ['office', 'office', 'together', 'wfh', 'wfh', 'together', 'together'] },
     bought: { 'banane-g': true },
-    weights: [{ date: '2026-09-28', nick: 102, partner: 70 }],
+    weights: [{ date: '2026-09-28', person1: 100, person2: 65 }],
   });
 
   const b = createStore(win);   // a brand new session, same browser
@@ -55,7 +55,7 @@ test('everything survives a reload — that is the whole point of memory', () =>
   assert.deepEqual(b.state.memory.favourites, ['d-puten-chili']);
   assert.equal(b.state.settings.dayModes[2], 'together');
   assert.equal(b.state.bought['banane-g'], true);
-  assert.equal(b.state.weights[0].nick, 102);
+  assert.equal(b.state.weights[0].person1, 100);
   assert.equal(b.state.plan.days.length, 7);
   assert.equal(b.state.plan.days[0].dinner.recipeId, plan.days[0].dinner.recipeId);
 });
@@ -127,7 +127,7 @@ test('a plan from an older engine is dropped, but the bans and log are kept', ()
   const m = migrate({
     plan: { version: PLAN_VERSION - 1, days: [{}] },
     memory: { banned: ['s-popcorn'] },
-    weights: [{ date: '2026-09-01', nick: 104 }],
+    weights: [{ date: '2026-09-01', person1: 104 }],
   });
   assert.equal(m.plan, null, 'a stale plan must not be rendered');
   assert.deepEqual(m.memory.banned, ['s-popcorn']);
@@ -181,33 +181,33 @@ test('reset clears storage as well as memory', () => {
 
 // ---------- Weight log ----------
 test('a second weigh-in on the same day replaces the first', () => {
-  let w = addWeight([], { date: '2026-09-28', nick: 102 });
-  w = addWeight(w, { date: '2026-09-28', nick: 101.6 });
+  let w = addWeight([], { date: '2026-09-28', person1: 100 });
+  w = addWeight(w, { date: '2026-09-28', person1: 99.6 });
   assert.equal(w.length, 1);
-  assert.equal(w[0].nick, 101.6);
+  assert.equal(w[0].person1, 99.6);
 });
 
 test('the log stays in date order however it is entered', () => {
-  let w = addWeight([], { date: '2026-10-05', nick: 101 });
-  w = addWeight(w, { date: '2026-09-28', nick: 102 });
+  let w = addWeight([], { date: '2026-10-05', person1: 99 });
+  w = addWeight(w, { date: '2026-09-28', person1: 100 });
   assert.deepEqual(w.map((x) => x.date), ['2026-09-28', '2026-10-05']);
 });
 
 test('the trend is kg per week, and honest about needing two points', () => {
-  assert.equal(weightTrend([], 'nick'), null);
-  assert.equal(weightTrend([{ date: '2026-09-28', nick: 102 }], 'nick'), null);
+  assert.equal(weightTrend([], 'person1'), null);
+  assert.equal(weightTrend([{ date: '2026-09-28', person1: 100 }], 'person1'), null);
   const t = weightTrend([
-    { date: '2026-09-28', nick: 102 },
-    { date: '2026-10-12', nick: 101 },
-  ], 'nick');
+    { date: '2026-09-28', person1: 100 },
+    { date: '2026-10-12', person1: 99 },
+  ], 'person1');
   assert.equal(t.days, 14);
   assert.ok(Math.abs(t.kgPerWeek - -0.5) < 1e-9, `got ${t.kgPerWeek}`);
 });
 
 test('the trend ignores a person who was not weighed', () => {
-  const log = [{ date: '2026-09-28', nick: 102 }, { date: '2026-10-05', nick: 101.5, partner: 69 }];
-  assert.ok(weightTrend(log, 'nick'));
-  assert.equal(weightTrend(log, 'partner'), null, 'one data point is not a trend');
+  const log = [{ date: '2026-09-28', person1: 100 }, { date: '2026-10-05', person1: 99.5, person2: 64 }];
+  assert.ok(weightTrend(log, 'person1'));
+  assert.equal(weightTrend(log, 'person2'), null, 'one data point is not a trend');
 });
 
 test('emptyState is a complete, usable state on its own', () => {

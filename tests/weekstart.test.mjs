@@ -141,9 +141,9 @@ test('re-cutting the week carries each real day its own settings', () => {
 });
 
 test('a correction already written against a day travels with that day', () => {
-  const marked = { ...S, adjust: S.adjust.map((a, i) => (i === 0 ? { nick: -200 } : a)) };
+  const marked = { ...S, adjust: S.adjust.map((a, i) => (i === 0 ? { person1: -200 } : a)) };
   const s = setWeekStart(marked, THU);
-  assert.deepEqual(s.adjust[positionOf(s, 0)], { nick: -200 }, "Monday's correction moved");
+  assert.deepEqual(s.adjust[positionOf(s, 0)], { person1: -200 }, "Monday's correction moved");
   assert.equal(s.adjust.length, 7);
   assert.equal(s.adjust.filter((a) => Object.keys(a).length).length, 1, 'the correction was duplicated');
 });

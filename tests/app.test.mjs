@@ -160,16 +160,16 @@ test('the weight log saves, updates the target and shows a trend', () => {
   const app = open();
   app.tab('weight');
   app.$('#w-date').value = '2026-09-07';
-  app.$('#w-nick').value = '102';
+  app.$('#w-person1').value = '100';
   app.click('[data-act="log-weight"]');
 
   app.$('#w-date').value = '2026-09-21';
-  app.$('#w-nick').value = '100.6';
+  app.$('#w-person1').value = '98.6';
   app.click('[data-act="log-weight"]');
 
   const s = app.state();
   assert.equal(s.weights.length, 2);
-  assert.equal(s.settings.people[0].weightKg, 100.6, 'the target did not follow the new weight');
+  assert.equal(s.settings.people[0].weightKg, 98.6, 'the target did not follow the new weight');
   assert.ok(/-0\.7\d? kg\/week/.test(app.text()), `no trend shown: ${app.text().slice(0, 0)}`);
   assert.ok(app.$('.spark'), 'no chart drawn');
 });
@@ -200,12 +200,12 @@ test('the "why" tab explains the numbers rather than just asserting them', () =>
 test('changing a weight in settings re-flows the whole plan', () => {
   const app = open();
   app.tab('settings');
-  const before = app.state().plan.days[0].breakfast.kcal.nick;
+  const before = app.state().plan.days[0].breakfast.kcal.person1;
   const input = app.$('[data-person="0"][data-key="weightKg"]');
   input.value = '80';
   input.dispatchEvent(new app.window.Event('change'));
   assert.equal(app.state().settings.people[0].weightKg, 80);
-  assert.ok(app.state().plan.days[0].breakfast.kcal.nick < before, 'a lighter person got the same calories');
+  assert.ok(app.state().plan.days[0].breakfast.kcal.person1 < before, 'a lighter person got the same calories');
 });
 
 test('nonsense in a settings field is ignored rather than breaking the maths', () => {
@@ -343,9 +343,9 @@ test('the artefact is genuinely self-contained — no network of any kind', () =
 test('a lunch they both eat shows one line with both portions, not a zero', () => {
   const app = open();
   const s = app.state();
-  const dayIdx = s.plan.days.findIndex((d) => d.lunch.nick.recipeId
-    && d.lunch.nick.recipeId === d.lunch.partner.recipeId
-    && d.lunch.nick.kind === d.lunch.partner.kind);
+  const dayIdx = s.plan.days.findIndex((d) => d.lunch.person1.recipeId
+    && d.lunch.person1.recipeId === d.lunch.person2.recipeId
+    && d.lunch.person1.kind === d.lunch.person2.kind);
   assert.ok(dayIdx >= 0, 'the fixture has no shared lunch to check');
 
   const rows = [...app.$$('.day')[dayIdx].querySelectorAll('.slot')]
@@ -360,8 +360,8 @@ test('a lunch they both eat shows one line with both portions, not a zero', () =
 test('swapping a shared lunch keeps it shared rather than splitting them up', () => {
   const app = open();
   // Both home on Saturday, so lunch there is the shared case.
-  const dayIdx = app.state().plan.days.findIndex((d, i) => d.lunch.nick.kind === 'recipe'
-    && d.lunch.partner.kind === 'recipe' && d.lunch.nick.recipeId === d.lunch.partner.recipeId
+  const dayIdx = app.state().plan.days.findIndex((d, i) => d.lunch.person1.kind === 'recipe'
+    && d.lunch.person2.kind === 'recipe' && d.lunch.person1.recipeId === d.lunch.person2.recipeId
     && i > 0);
   if (dayIdx < 0) return;   // nothing to test in this week
   const row = [...app.$$('.day')[dayIdx].querySelectorAll('.slot')]
@@ -370,18 +370,18 @@ test('swapping a shared lunch keeps it shared rather than splitting them up', ()
   app.click(row.querySelector('[data-swap]'));
   app.click(app.$$('#swap [data-pick]')[0]);
   const lunch = app.state().plan.days[dayIdx].lunch;
-  assert.equal(lunch.nick.recipeId, lunch.partner.recipeId, 'the swap put them on different meals');
+  assert.equal(lunch.person1.recipeId, lunch.person2.recipeId, 'the swap put them on different meals');
 });
 
 test('a shared meal detail lists a portion for each of them', () => {
   const app = open();
-  const dayIdx = app.state().plan.days.findIndex((d) => d.lunch.nick.recipeId
-    && d.lunch.nick.recipeId === d.lunch.partner.recipeId);
+  const dayIdx = app.state().plan.days.findIndex((d) => d.lunch.person1.recipeId
+    && d.lunch.person1.recipeId === d.lunch.person2.recipeId);
   const row = [...app.$$('.day')[dayIdx].querySelectorAll('.slot')]
     .find((r) => r.querySelector('.slot-label').textContent.trim() === 'Lunch');
   app.click(row.querySelector('[data-detail]'));
   const detail = app.$$('.day')[dayIdx].querySelector('.detail');
-  assert.ok(/Nick/.test(detail.textContent) && /Partner/i.test(detail.textContent),
+  assert.ok(/Person 1/.test(detail.textContent) && /Person 2/i.test(detail.textContent),
     'a shared meal detail should name both portions');
 });
 

@@ -89,7 +89,7 @@ export function dailyTarget(person) {
 }
 
 // Rounded DOWN to the nearest 5: this is a floor to clear, so we must not invent a
-// requirement above what 1.5 g/kg actually supports (102 kg -> 153 g -> 150 g).
+// requirement above what 1.5 g/kg actually supports (103 kg -> 154.5 g -> 150 g).
 export function proteinFloor(person) {
   return Math.floor((person.weightKg * PROTEIN_G_PER_KG) / 5) * 5;
 }
@@ -146,29 +146,56 @@ export function profile(person) {
   };
 }
 
+/**
+ * The seed for a brand-new plan, and nothing more.
+ *
+ * Read once, at `defaultSettings()` in planner.js, to build the first state a
+ * household ever has. After that the real values live in stored settings and
+ * are edited in the Settings panel, so changing anything here has no effect on
+ * an app that has already been used.
+ *
+ * Deliberately generic. This file is public, and a household's weight, height
+ * and age have no business being in source control -- these are round synthetic
+ * numbers, not anybody's measurements.
+ *
+ * Chosen to land on the same derived budgets the recipe set was tuned against
+ * (2200 and 1500 kcal, portion ratio 0.68) rather than merely to be anonymous.
+ * Picking anonymous-but-smaller numbers made two planner tests fail honestly:
+ * at a ~1950 kcal reference portion the pool of recipes that fit a dinner slot
+ * narrows enough that cuisine variety collapses and the vegetarian-day cap
+ * breaks. That is a real limitation of the recipe set, logged as its own
+ * increment -- it is not something the defaults should paper over, but neither
+ * is a privacy change the place to discover it.
+ *
+ * The two entries are positional throughout the app: index 0 is the reference
+ * portion that recipe quantities are cut against, index 1 eats the derived
+ * share of the same pot (see portionRatio below). The ids are referenced in
+ * stored documents and as household seats, so they are stable strings rather
+ * than names -- and valid identifiers, so `day.lunch.person1` reads as well as
+ * any other property access.
+ */
 export const DEFAULT_PEOPLE = [
   {
-    id: 'nick', name: 'Nick', sex: 'male',
-    weightKg: 102, heightCm: 180, age: 34,
+    id: 'person1', name: 'Person 1', sex: 'male',
+    weightKg: 100, heightCm: 180, age: 30,
     activityFactor: 1.375,
-    // Football on Friday, which is position 4 in a week that starts on Monday, ~600 kcal for 90 minutes.
+    // Shape of the field, with one worked example: a 90-minute Friday session at
+    // roughly 600 kcal. Position 4 in a week that starts on Monday.
     exerciseKcalByDay: [0, 0, 0, 0, 600, 0, 0],
     eatsAtCanteen: true,
-    // A first goal, not a final one: 90 kg is a BMI of 27.8, which is where the
-    // next decision gets made. Editable in Settings.
     goal: 'lose', goalWeightKg: 90,
   },
   {
-    id: 'partner', name: 'Partner', sex: 'female',
-    weightKg: 70, heightCm: 160, age: 35,
+    id: 'person2', name: 'Person 2', sex: 'female',
+    weightKg: 65, heightCm: 168, age: 30,
     activityFactor: 1.45,
     exerciseKcalByDay: [0, 0, 0, 0, 0, 0, 0],
     eatsAtCanteen: false,
-    goal: 'lose', goalWeightKg: 63,
+    goal: 'lose', goalWeightKg: 60,
   },
 ];
 
-/** How much smaller her portion is from the same pot. Derived, never hardcoded. */
+/** How much smaller the second portion is from the same pot. Derived, never hardcoded. */
 export function portionRatio(people = DEFAULT_PEOPLE) {
   const [a, b] = people;
   return dailyTarget(b) / dailyTarget(a);

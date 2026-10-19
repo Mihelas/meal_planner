@@ -10,7 +10,7 @@ import { SAFE_FLOOR_KCAL, dayTarget, KCAL_PER_KG_FAT } from '../src/targets.js';
 const S = defaultSettings();
 const M = { banned: [] };
 const plan = generateWeek(S, M);
-const [NICK, GF] = S.people;
+const [P1, P2] = S.people;
 
 // ---------- The presets ----------
 test('the off-plan presets are the things they actually fall back on', () => {
@@ -34,8 +34,8 @@ test('logging an off-plan dinner replaces that meal for everyone who ate it', ()
   assert.equal(e.recipeId, null);
   assert.equal(e.estimated, true, 'the UI has to be able to say this is an estimate');
   assert.match(e.note, /Pizza/);
-  assert.equal(e.kcal[NICK.id], 900);
-  assert.ok(e.kcal[GF.id] > 0 && e.kcal[GF.id] < 900, 'her share is smaller, not equal or missing');
+  assert.equal(e.kcal[P1.id], 900);
+  assert.ok(e.kcal[P2.id] > 0 && e.kcal[P2.id] < 900, 'her share is smaller, not equal or missing');
 });
 
 test('an off-plan meal is locked, so re-rolling the week cannot erase what was eaten', () => {
@@ -43,20 +43,20 @@ test('an off-plan meal is locked, so re-rolling the week cannot erase what was e
   assert.equal(next.days[1].dinner.locked, true);
   const again = generateWeek(S, M, next);
   assert.equal(again.days[1].dinner.kind, 'off-plan');
-  assert.equal(again.days[1].dinner.kcal[NICK.id], 900);
+  assert.equal(again.days[1].dinner.kcal[P1.id], 900);
 });
 
 test('logging for one person only touches that person', () => {
-  const next = logOffPlan(plan, S, { day: 2, slot: 'lunch', person: NICK.id, kcal: 700 });
-  assert.equal(next.days[2].lunch[NICK.id].kind, 'off-plan');
-  assert.equal(next.days[2].lunch[NICK.id].kcal[NICK.id], 700);
-  assert.notEqual(next.days[2].lunch[GF.id].kind, 'off-plan');
+  const next = logOffPlan(plan, S, { day: 2, slot: 'lunch', person: P1.id, kcal: 700 });
+  assert.equal(next.days[2].lunch[P1.id].kind, 'off-plan');
+  assert.equal(next.days[2].lunch[P1.id].kcal[P1.id], 700);
+  assert.notEqual(next.days[2].lunch[P2.id].kind, 'off-plan');
 });
 
 test('logging with nobody named means the household ate it', () => {
   const next = logOffPlan(plan, S, { day: 2, slot: 'lunch', kcal: 550 });
-  assert.equal(next.days[2].lunch[NICK.id].kind, 'off-plan');
-  assert.equal(next.days[2].lunch[GF.id].kind, 'off-plan');
+  assert.equal(next.days[2].lunch[P1.id].kind, 'off-plan');
+  assert.equal(next.days[2].lunch[P2.id].kind, 'off-plan');
 });
 
 test('the original plan is untouched — logging returns a new plan', () => {
@@ -67,15 +67,15 @@ test('the original plan is untouched — logging returns a new plan', () => {
 
 test('an off-plan meal still carries a protein estimate, so the day still adds up', () => {
   const e = logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 900 }).days[1].dinner;
-  assert.ok(e.protein[NICK.id] > 0, 'a pizza is not zero protein');
-  assert.ok(e.protein[NICK.id] < 900 * 0.15, 'nor is it a protein shake');
+  assert.ok(e.protein[P1.id] > 0, 'a pizza is not zero protein');
+  assert.ok(e.protein[P1.id] < 900 * 0.15, 'nor is it a protein shake');
 });
 
 test('nonsense kcal becomes zero rather than NaN spreading through the week', () => {
   const e = logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 'lots' }).days[1].dinner;
-  assert.equal(e.kcal[NICK.id], 0);
+  assert.equal(e.kcal[P1.id], 0);
   const totals = dayTotals(logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 'lots' }).days[1]);
-  assert.ok(Number.isFinite(totals[NICK.id].kcal));
+  assert.ok(Number.isFinite(totals[P1.id].kcal));
 });
 
 test('logging into a day that does not exist changes nothing instead of throwing', () => {
@@ -103,14 +103,14 @@ test('a clean week is level: planned equals actual, near enough', () => {
 test('the ledger counts the off-plan meals and what they cost', () => {
   const next = logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 1100, label: 'Burger' });
   const ledger = weekLedger(next, S);
-  assert.equal(ledger[NICK.id].offPlanMeals, 1);
-  assert.equal(ledger[NICK.id].offPlanKcal, 1100);
-  assert.ok(ledger[NICK.id].surplus > 0, 'a burger instead of dinner must show as a surplus');
+  assert.equal(ledger[P1.id].offPlanMeals, 1);
+  assert.equal(ledger[P1.id].offPlanKcal, 1100);
+  assert.ok(ledger[P1.id].surplus > 0, 'a burger instead of dinner must show as a surplus');
 });
 
 test('the ledger states the surplus in kg, because that is the question being asked', () => {
   const next = logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 1100 });
-  const row = weekLedger(next, S)[NICK.id];
+  const row = weekLedger(next, S)[P1.id];
   assert.ok(Math.abs(row.kgEquivalent - row.surplus / KCAL_PER_KG_FAT) < 0.01);
 });
 
@@ -118,12 +118,12 @@ test('the ledger states the surplus in kg, because that is the question being as
 test('rebalancing spreads the surplus over the days that are still ahead', () => {
   const logged = logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 1200, label: 'Pizza' });
   const { settings: next, report } = rebalanceWeek(logged, S, { fromDay: 1 });
-  const surplus = weekLedger(logged, S)[NICK.id].surplus;
-  assert.ok(report[NICK.id].absorbed > 0);
-  assert.ok(report[NICK.id].absorbed <= Math.round(surplus) + 1);
+  const surplus = weekLedger(logged, S)[P1.id].surplus;
+  assert.ok(report[P1.id].absorbed > 0);
+  assert.ok(report[P1.id].absorbed <= Math.round(surplus) + 1);
   // Nothing before or on the day itself is touched.
-  for (const i of [0, 1]) assert.equal(next.adjust[i][NICK.id] ?? 0, 0, `${DAYS[i]} should not move`);
-  const cuts = [2, 3, 4, 5, 6].map((i) => next.adjust[i][NICK.id] ?? 0);
+  for (const i of [0, 1]) assert.equal(next.adjust[i][P1.id] ?? 0, 0, `${DAYS[i]} should not move`);
+  const cuts = [2, 3, 4, 5, 6].map((i) => next.adjust[i][P1.id] ?? 0);
   assert.ok(cuts.every((c) => c <= 0), 'absorbing a surplus means eating less, never more');
   assert.ok(cuts.some((c) => c < 0), 'something has to change');
 });
@@ -132,7 +132,7 @@ test('no single day is cut by more than the cap, however big the blowout', () =>
   const logged = logOffPlan(plan, S, { day: 0, slot: 'dinner', kcal: 4000 });
   const { settings: next } = rebalanceWeek(logged, S, { fromDay: 0 });
   for (let i = 0; i < 7; i++) {
-    const cut = next.adjust[i][NICK.id] ?? 0;
+    const cut = next.adjust[i][P1.id] ?? 0;
     assert.ok(Math.abs(cut) <= MAX_DAY_ADJUST, `${DAYS[i]} cut by ${cut}`);
   }
 });
@@ -151,16 +151,16 @@ test('rebalancing never pushes anyone below a safe intake', () => {
 test('a surplus too big to absorb is reported, not hidden', () => {
   const logged = logOffPlan(plan, S, { day: 0, slot: 'dinner', kcal: 6000 });
   const { report } = rebalanceWeek(logged, S, { fromDay: 0 });
-  assert.ok(report[NICK.id].left > 0, 'the leftover has to be visible somewhere');
-  assert.equal(report[NICK.id].surplus, report[NICK.id].absorbed + report[NICK.id].left);
+  assert.ok(report[P1.id].left > 0, 'the leftover has to be visible somewhere');
+  assert.equal(report[P1.id].surplus, report[P1.id].absorbed + report[P1.id].left);
 });
 
 test('rebalancing on the last day has nowhere to put it and says so', () => {
   const logged = logOffPlan(plan, S, { day: 6, slot: 'dinner', kcal: 1200 });
   const { report, settings: next } = rebalanceWeek(logged, S, { fromDay: 6 });
-  assert.equal(report[NICK.id].days, 0);
-  assert.equal(report[NICK.id].absorbed, 0);
-  assert.ok(report[NICK.id].left > 0);
+  assert.equal(report[P1.id].days, 0);
+  assert.equal(report[P1.id].absorbed, 0);
+  assert.ok(report[P1.id].left > 0);
   assert.deepEqual(next.adjust[6], {});
 });
 
@@ -188,8 +188,8 @@ test('rounding is ignored but a real overshoot is not', () => {
   }
   // The band scales with the person: he eats 2240 a day and she eats 1500, so a flat
   // kcal figure would be half a day's slack for one of them and rounding for the other.
-  assert.ok(rebalanceDeadband(ledger[NICK.id].planned / 7, 7)
-    > rebalanceDeadband(ledger[GF.id].planned / 7, 7));
+  assert.ok(rebalanceDeadband(ledger[P1.id].planned / 7, 7)
+    > rebalanceDeadband(ledger[P2.id].planned / 7, 7));
   // And it shrinks as the week runs out, so Thursday's pizza is not excused by Monday's room.
   assert.ok(rebalanceDeadband(300, 2) < rebalanceDeadband(300, 5));
   // 1800, not 1200: an off-plan meal's surplus is measured against what the slot
@@ -236,14 +236,14 @@ test('reflow keeps the same recipes and only changes the portions', () => {
   // already close keeps its portions and the next day absorbs more. Demanding that
   // one named day move is an assertion about which recipes the seed drew, not about
   // what reflow promises.
-  const cutDays = [2, 3, 4, 5, 6].filter((i) => (adjusted.adjust[i][NICK.id] ?? 0) < 0);
+  const cutDays = [2, 3, 4, 5, 6].filter((i) => (adjusted.adjust[i][P1.id] ?? 0) < 0);
   assert.ok(cutDays.length, 'the rebalance should have cut something');
-  const before = cutDays.reduce((s, i) => s + dayTotals(logged.days[i])[NICK.id].kcal, 0);
-  const afterSum = cutDays.reduce((s, i) => s + dayTotals(after.days[i])[NICK.id].kcal, 0);
+  const before = cutDays.reduce((s, i) => s + dayTotals(logged.days[i])[P1.id].kcal, 0);
+  const afterSum = cutDays.reduce((s, i) => s + dayTotals(after.days[i])[P1.id].kcal, 0);
   assert.ok(afterSum < before, `the cut days did not come down: ${before} -> ${afterSum}`);
   // And no cut day moves the wrong way, which is the failure that would actually hurt.
   for (const i of cutDays) {
-    assert.ok(dayTotals(after.days[i])[NICK.id].kcal <= dayTotals(logged.days[i])[NICK.id].kcal,
+    assert.ok(dayTotals(after.days[i])[P1.id].kcal <= dayTotals(logged.days[i])[P1.id].kcal,
       `${DAYS[i]} went up after a downward adjustment`);
   }
 });
@@ -253,8 +253,8 @@ test('a reflowed day lands on its adjusted target, not the original one', () => 
   const { settings: adjusted } = rebalanceWeek(logged, S, { fromDay: 1 });
   const after = reflow(logged, adjusted);
   for (const i of [2, 3, 4, 5, 6]) {
-    const target = targetFor(NICK, adjusted, i);
-    const actual = dayTotals(after.days[i])[NICK.id].kcal;
+    const target = targetFor(P1, adjusted, i);
+    const actual = dayTotals(after.days[i])[P1.id].kcal;
     assert.ok(Math.abs(actual - target) / target < 0.15, `${DAYS[i]}: ${actual} vs ${target}`);
   }
 });
@@ -262,40 +262,40 @@ test('a reflowed day lands on its adjusted target, not the original one', () => 
 test('the day of the blowout is left alone — shrinking a meal already eaten is a lie', () => {
   const logged = logOffPlan(plan, S, { day: 2, slot: 'lunch', kcal: 900 });
   const trimmed = reflow(logged, S);
-  assert.equal(dayTotals(trimmed.days[2])[NICK.id].kcal, dayTotals(logged.days[2])[NICK.id].kcal);
+  assert.equal(dayTotals(trimmed.days[2])[P1.id].kcal, dayTotals(logged.days[2])[P1.id].kcal);
 });
 
 test('off-plan kcal survive a reflow untouched: they are facts, not suggestions', () => {
   const logged = logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 1200 });
   const { settings: adjusted } = rebalanceWeek(logged, S, { fromDay: 1 });
   const after = reflow(logged, adjusted);
-  assert.equal(after.days[1].dinner.kcal[NICK.id], 1200);
+  assert.equal(after.days[1].dinner.kcal[P1.id], 1200);
   assert.equal(after.days[1].dinner.kind, 'off-plan');
 });
 
 // ---------- Per-day adjustment plumbing ----------
 test('targetFor applies the adjustment for the right person on the right day', () => {
-  const adjust = [{}, {}, { [NICK.id]: -200 }, {}, {}, {}, {}];
+  const adjust = [{}, {}, { [P1.id]: -200 }, {}, {}, {}, {}];
   const settings = { ...S, adjust };
-  assert.equal(targetFor(NICK, settings, 2), dayTarget(NICK, { exerciseKcal: 0 }) - 200);
-  assert.equal(targetFor(GF, settings, 2), dayTarget(GF, { exerciseKcal: 0 }));
-  assert.equal(targetFor(NICK, settings, 1), dayTarget(NICK, { exerciseKcal: 0 }));
+  assert.equal(targetFor(P1, settings, 2), dayTarget(P1, { exerciseKcal: 0 }) - 200);
+  assert.equal(targetFor(P2, settings, 2), dayTarget(P2, { exerciseKcal: 0 }));
+  assert.equal(targetFor(P1, settings, 1), dayTarget(P1, { exerciseKcal: 0 }));
 });
 
 test('an absurd stored adjustment still cannot breach the safety floor', () => {
-  const settings = { ...S, adjust: [{ [NICK.id]: -9000 }, {}, {}, {}, {}, {}, {}] };
-  assert.equal(targetFor(NICK, settings, 0), SAFE_FLOOR_KCAL.male);
+  const settings = { ...S, adjust: [{ [P1.id]: -9000 }, {}, {}, {}, {}, {}, {}] };
+  assert.equal(targetFor(P1, settings, 0), SAFE_FLOOR_KCAL.male);
 });
 
 test('football day keeps its exercise allowance through an adjustment', () => {
-  const settings = { ...S, adjust: [{}, {}, {}, {}, { [NICK.id]: -100 }, {}, {}] };
-  assert.equal(targetFor(NICK, settings, 4), dayTarget(NICK, { exerciseKcal: 600 }) - 100);
+  const settings = { ...S, adjust: [{}, {}, {}, {}, { [P1.id]: -100 }, {}, {}] };
+  assert.equal(targetFor(P1, settings, 4), dayTarget(P1, { exerciseKcal: 600 }) - 100);
 });
 
 // ---------- It has to hold together ----------
 test('an off-plan week still produces a plan where every entry has numbers', () => {
   let logged = logOffPlan(plan, S, { day: 1, slot: 'dinner', kcal: 1200 });
-  logged = logOffPlan(logged, S, { day: 4, slot: 'snackEvening', kcal: 600, person: NICK.id });
+  logged = logOffPlan(logged, S, { day: 4, slot: 'snackEvening', kcal: 600, person: P1.id });
   const { settings: adjusted } = rebalanceWeek(logged, S, { fromDay: 4 });
   const after = reflow(logged, adjusted);
   after.days.forEach((d, i) => {

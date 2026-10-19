@@ -28,11 +28,11 @@ create table if not exists public.households (
 
 -- Who is in which household, and which person inside the plan they are.
 --
--- person_id is the join between an account and a seat in the document ('nick',
--- 'partner', whatever a household names its people). Free text rather than an
--- enum because every household names its own, and unique per household so two
--- accounts cannot both claim the same seat and then both be served the same
--- lunch while neither is served the other's.
+-- person_id is the join between an account and a seat in the document
+-- ('person1', 'person2', whatever a household names its people). Free text
+-- rather than an enum because every household names its own, and unique per
+-- household so two accounts cannot both claim the same seat and then both be
+-- served the same lunch while neither is served the other's.
 create table if not exists public.household_members (
   household_id uuid not null references public.households on delete cascade,
   user_id      uuid not null references auth.users on delete cascade,

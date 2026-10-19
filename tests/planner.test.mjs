@@ -14,11 +14,11 @@ import { dailyTarget, proteinFloor, dayTarget } from '../src/targets.js';
 const S = defaultSettings();
 const emptyMemory = { banned: [] };
 const plan = generateWeek(S, emptyMemory);
-const [NICK, GF] = S.people;
+const [P1, P2] = S.people;
 const eachDay = (fn) => plan.days.forEach((d, i) => fn(d, i));
 const entriesOf = (day) => SLOT_KEYS.flatMap((k) => {
   const v = day[k];
-  return v && v.nick ? [v.nick, v.partner] : [v];
+  return v && v.person1 ? [v.person1, v.person2] : [v];
 }).filter(Boolean);
 
 // ---------- Shape ----------
@@ -27,7 +27,7 @@ test('a week is 7 days, each with every slot filled for both of us', () => {
   eachDay((d, i) => {
     assert.equal(d.name, DAYS[i]);
     for (const k of SLOT_KEYS) assert.ok(d[k], `${d.name}: slot "${k}" is empty`);
-    assert.ok(d.lunch.nick && d.lunch.partner, `${d.name}: lunch must be per person`);
+    assert.ok(d.lunch.person1 && d.lunch.person2, `${d.name}: lunch must be per person`);
   });
 });
 
@@ -67,7 +67,7 @@ test('recipes land in the slot they were written for', () => {
   const want = { breakfast: 'breakfast', lunch: 'lunch', dinner: 'dinner', snackAfternoon: 'snack', snackEvening: 'snack' };
   eachDay((d) => {
     for (const k of SLOT_KEYS) {
-      const list = d[k].nick ? [d[k].nick, d[k].partner] : [d[k]];
+      const list = d[k].person1 ? [d[k].person1, d[k].person2] : [d[k]];
       for (const e of list) {
         if (e.kind !== 'recipe') continue;
         const r = recipeById(e.recipeId);
@@ -105,16 +105,16 @@ test('the protein floor is cleared every day, for both of us', () => {
 test('nobody is asked to eat below a safe minimum on any day', () => {
   eachDay((d) => {
     const t = dayTotals(d);
-    assert.ok(t.nick.kcal >= 1500, `${d.name}: Nick at ${t.nick.kcal} kcal`);
-    assert.ok(t.partner.kcal >= 1200, `${d.name}: partner at ${t.partner.kcal} kcal`);
+    assert.ok(t.person1.kcal >= 1500, `${d.name}: Person 1 at ${t.person1.kcal} kcal`);
+    assert.ok(t.person2.kcal >= 1200, `${d.name}: person2 at ${t.person2.kcal} kcal`);
   });
 });
 
 test('she eats less than him from the same pot, but not dramatically less', () => {
   eachDay((d) => {
     const t = dayTotals(d);
-    assert.ok(t.partner.kcal < t.nick.kcal, `${d.name}: portions did not scale down`);
-    assert.ok(t.partner.kcal / t.nick.kcal > 0.55, `${d.name}: her day is implausibly small`);
+    assert.ok(t.person2.kcal < t.person1.kcal, `${d.name}: portions did not scale down`);
+    assert.ok(t.person2.kcal / t.person1.kcal > 0.55, `${d.name}: her day is implausibly small`);
   });
 });
 
@@ -139,14 +139,14 @@ test('weekend-only recipes never appear on a weekday', () => {
 
 // ---------- Leftover chaining: the anti-pizza mechanism ----------
 test('most lunches are yesterday\'s dinner, already in the fridge', () => {
-  const lunches = plan.days.flatMap((d) => [d.lunch.nick, d.lunch.partner]);
+  const lunches = plan.days.flatMap((d) => [d.lunch.person1, d.lunch.person2]);
   const leftovers = lunches.filter((e) => e.kind === 'leftover');
   assert.ok(leftovers.length >= 6, `only ${leftovers.length} of ${lunches.length} lunches are leftovers`);
 });
 
 test('a leftover lunch always points back at a real dinner that was leftover-safe', () => {
   eachDay((d, i) => {
-    for (const e of [d.lunch.nick, d.lunch.partner]) {
+    for (const e of [d.lunch.person1, d.lunch.person2]) {
       if (e.kind !== 'leftover') continue;
       assert.equal(e.from, i - 1, `${d.name}: leftover should come from the previous day`);
       const source = plan.days[e.from].dinner;
@@ -165,7 +165,7 @@ test('cookPortions tells us to cook tonight\'s dinner AND tomorrow\'s lunch in o
     assert.ok(claimed >= tonight - 1e-9, `${d.name}: cookPortions is less than what we eat tonight`);
     const tomorrow = plan.days[i + 1];
     if (tomorrow) {
-      const carried = [tomorrow.lunch.nick, tomorrow.lunch.partner]
+      const carried = [tomorrow.lunch.person1, tomorrow.lunch.person2]
         .filter((e) => e.kind === 'leftover' && e.from === i)
         .reduce((a, e) => a + Object.values(e.portions).reduce((x, y) => x + y, 0), 0);
       assert.ok(Math.abs(claimed - (tonight + carried)) < 1e-9,
@@ -175,33 +175,33 @@ test('cookPortions tells us to cook tonight\'s dinner AND tomorrow\'s lunch in o
 });
 
 // ---------- Day modes ----------
-test('on an office day Nick gets canteen guidance instead of a packed lunch', () => {
+test('on an office day Person 1 gets canteen guidance instead of a packed lunch', () => {
   // eatOut is cleared so this tests the day mode alone — a booked meal out
   // correctly outranks the canteen, which is asserted separately below.
   const s = { ...S, eatOut: [], dayModes: DAYS.map(() => 'office') };
   const p = generateWeek(s, emptyMemory);
   p.days.forEach((d) => {
-    assert.equal(d.lunch.nick.kind, 'canteen', `${d.name}: expected a canteen card`);
-    assert.ok(d.lunch.nick.note.includes('Kantine') || /canteen/i.test(d.lunch.nick.note),
+    assert.equal(d.lunch.person1.kind, 'canteen', `${d.name}: expected a canteen card`);
+    assert.ok(d.lunch.person1.note.includes('Kantine') || /canteen/i.test(d.lunch.person1.note),
       `${d.name}: canteen note should say what to pick`);
-    assert.ok(d.lunch.partner.kind !== 'canteen', `${d.name}: she has no canteen`);
+    assert.ok(d.lunch.person2.kind !== 'canteen', `${d.name}: she has no canteen`);
   });
 });
 
 test('a booked meal out beats the canteen on an office day', () => {
   const s = { ...S, dayModes: DAYS.map(() => 'office'), eatOut: [{ day: 2, slot: 'lunch' }] };
   const p = generateWeek(s, emptyMemory);
-  assert.equal(p.days[2].lunch.nick.kind, 'eat-out');
-  assert.equal(p.days[1].lunch.nick.kind, 'canteen');
+  assert.equal(p.days[2].lunch.person1.kind, 'eat-out');
+  assert.equal(p.days[1].lunch.person1.kind, 'canteen');
 });
 
-test('flipping a day to WFH gives Nick real food again, and the rest of the week is untouched', () => {
+test('flipping a day to WFH gives Person 1 real food again, and the rest of the week is untouched', () => {
   const office = { ...S, dayModes: S.dayModes.map((_, i) => (i === 2 ? 'office' : S.dayModes[i])) };
   const wfh = { ...office, dayModes: office.dayModes.map((m, i) => (i === 2 ? 'wfh' : m)) };
   const a = generateWeek(office, emptyMemory);
   const b = generateWeek(wfh, emptyMemory);
-  assert.equal(a.days[2].lunch.nick.kind, 'canteen');
-  assert.notEqual(b.days[2].lunch.nick.kind, 'canteen');
+  assert.equal(a.days[2].lunch.person1.kind, 'canteen');
+  assert.notEqual(b.days[2].lunch.person1.kind, 'canteen');
   for (const i of [0, 1, 3, 4, 5, 6]) {
     assert.equal(a.days[i].dinner.recipeId, b.days[i].dinner.recipeId,
       `changing one day's mode reshuffled ${DAYS[i]}`);
@@ -221,20 +221,20 @@ test('Friday dinner needs almost no cooking, because we get in at 22:00', () => 
   assert.ok(r.minutes <= 10, `Friday dinner takes ${r.minutes} min`);
 });
 
-test('Friday afternoon has a pre-match snack and Nick gets his football calories back', () => {
+test('Friday afternoon has a pre-match snack and Person 1 gets his football calories back', () => {
   const fri = plan.days[S.footballDay];
   assert.ok(recipeById(fri.snackAfternoon.recipeId).tags.includes('pre-football'),
     'no pre-match snack on Friday');
   const t = dayTotals(fri);
   const normal = dayTotals(plan.days[1]);
-  assert.ok(t.nick.kcal > normal.nick.kcal, 'Friday should give Nick more food, not less');
-  assert.ok(t.nick.kcal > dailyTarget(NICK), 'the eat-back never arrived');
+  assert.ok(t.person1.kcal > normal.person1.kcal, 'Friday should give Person 1 more food, not less');
+  assert.ok(t.person1.kcal > dailyTarget(P1), 'the eat-back never arrived');
 });
 
 // ---------- Eating out ----------
 test('the two meals out are in the plan and budgeted, not pretended away', () => {
   const out = plan.days.flatMap((d, i) => SLOT_KEYS.flatMap((k) => {
-    const list = d[k].nick ? [d[k].nick, d[k].partner] : [d[k]];
+    const list = d[k].person1 ? [d[k].person1, d[k].person2] : [d[k]];
     return list.filter((e) => e.kind === 'eat-out').map((e) => ({ i, k }));
   }));
   const slots = new Set(out.map((o) => `${o.i}-${o.k}`));
@@ -244,8 +244,8 @@ test('the two meals out are in the plan and budgeted, not pretended away', () =>
 
 test('an eat-out slot still counts calories, so the week stays honest', () => {
   const { day, slot } = S.eatOut[0];
-  const e = plan.days[day][slot].nick ? plan.days[day][slot].nick : plan.days[day][slot];
-  assert.ok(e.kcal.nick > 200, 'an eat-out meal cannot cost zero calories');
+  const e = plan.days[day][slot].person1 ? plan.days[day][slot].person1 : plan.days[day][slot];
+  assert.ok(e.kcal.person1 > 200, 'an eat-out meal cannot cost zero calories');
 });
 
 // ---------- Variety ----------
@@ -293,7 +293,7 @@ test('swapping a dinner gives a different recipe that still fits the slot', () =
   const now = after.days[1].dinner;
   assert.notEqual(now.recipeId, before, 'swap returned the same recipe');
   assert.equal(recipeById(now.recipeId).slot, 'dinner');
-  assert.ok(now.kcal.nick > 0 && now.protein.nick > 0, 'swap did not recompute the numbers');
+  assert.ok(now.kcal.person1 > 0 && now.protein.person1 > 0, 'swap did not recompute the numbers');
 });
 
 test('swapping does not touch any other day', () => {
@@ -317,13 +317,13 @@ test('swapping a leftover-safe dinner for an unsafe one repairs tomorrow\'s lunc
   // Force day 1's dinner onto something not leftover-ok and check day 2 still has lunch.
   for (let n = 0; n < 12; n++) {
     p = swapMeal(p, S, emptyMemory, { day: 1, slot: 'dinner' });
-    for (const e of [p.days[2].lunch.nick, p.days[2].lunch.partner]) {
+    for (const e of [p.days[2].lunch.person1, p.days[2].lunch.person2]) {
       if (e.kind !== 'leftover') continue;
       assert.equal(e.from, 1);
       assert.equal(e.recipeId, p.days[1].dinner.recipeId, 'stale leftover pointing at the old dinner');
       assert.ok(recipeById(e.recipeId).tags.includes('leftover-ok'), 'kept an unsafe leftover');
     }
-    assert.ok(p.days[2].lunch.nick.kcal.nick > 0, 'day 2 lunch lost its calories');
+    assert.ok(p.days[2].lunch.person1.kcal.person1 > 0, 'day 2 lunch lost its calories');
   }
 });
 
@@ -339,15 +339,15 @@ test('the Friday swap stays inside the post-football shortlist', () => {
 test('an office lunch cannot be swapped into cooked food (there is no kitchen)', () => {
   const s = { ...S, dayModes: S.dayModes.map((m, i) => (i === 0 ? 'office' : m)) };
   const p = generateWeek(s, emptyMemory);
-  const after = swapMeal(p, s, emptyMemory, { day: 0, slot: 'lunch', person: 'nick' });
-  assert.equal(after.days[0].lunch.nick.kind, 'canteen');
-  assert.notEqual(after.days[0].lunch.nick.note, p.days[0].lunch.nick.note,
+  const after = swapMeal(p, s, emptyMemory, { day: 0, slot: 'lunch', person: 'person1' });
+  assert.equal(after.days[0].lunch.person1.kind, 'canteen');
+  assert.notEqual(after.days[0].lunch.person1.note, p.days[0].lunch.person1.note,
     'swapping a canteen card should at least offer a different suggestion');
 });
 
 test('swapping her lunch leaves his alone', () => {
-  const after = swapMeal(plan, S, emptyMemory, { day: 0, slot: 'lunch', person: 'partner' });
-  assert.equal(after.days[0].lunch.nick.recipeId, plan.days[0].lunch.nick.recipeId);
+  const after = swapMeal(plan, S, emptyMemory, { day: 0, slot: 'lunch', person: 'person2' });
+  assert.equal(after.days[0].lunch.person1.recipeId, plan.days[0].lunch.person1.recipeId);
 });
 
 // ---------- Ban: "never again" ----------
@@ -420,9 +420,9 @@ test('switching a day to Office rewrites only that lunch, keeping every swap', (
   const swapped = swapMeal(swapMeal(plan, S, emptyMemory, { day: 0, slot: 'dinner' }),
     S, emptyMemory, { day: 6, slot: 'breakfast' });
   const s2 = { ...S, dayModes: S.dayModes.map((m, i) => (i === 3 ? 'office' : m)) };
-  const after = regenerateSlot(swapped, s2, emptyMemory, { day: 3, slot: 'lunch', person: 'nick' });
+  const after = regenerateSlot(swapped, s2, emptyMemory, { day: 3, slot: 'lunch', person: 'person1' });
 
-  assert.equal(after.days[3].lunch.nick.kind, 'canteen', 'the mode change did not take effect');
+  assert.equal(after.days[3].lunch.person1.kind, 'canteen', 'the mode change did not take effect');
   assert.equal(after.days[0].dinner.recipeId, swapped.days[0].dinner.recipeId, 'a swapped dinner was lost');
   assert.equal(after.days[6].breakfast.recipeId, swapped.days[6].breakfast.recipeId, 'a swapped breakfast was lost');
   for (let i = 0; i < 7; i++) {
@@ -494,7 +494,7 @@ test('a named recipe goes straight into the slot, however long the shortlist get
   // which quietly stopped working the week dinner passed forty candidates: the
   // click then left whatever the fortieth step happened to be. An explicit pick
   // has to be honoured in one call, whatever the library grows to.
-  const person = NICK.id;
+  const person = P1.id;
   // Any day the kitchen cooks meat on: a vegetarian day's dinner shortlist is
   // legitimately short (the veg pool is a fraction of the library), and this test
   // is about what happens when the shortlist is LONG.
@@ -515,7 +515,7 @@ test('a named recipe that is not on offer is refused, not forced in', () => {
   // data-pick comes off the DOM, and the slot's own rules (banned, already on
   // the board, wrong slot) are the only thing standing between a stale button
   // and a week with porridge for dinner.
-  const person = NICK.id;
+  const person = P1.id;
   const at = { day: 2, slot: 'dinner', person };
   const before = plan.days[2].dinner.recipeId;
   for (const id of ['b-skyr-beeren-nuss', 'no-such-recipe', before]) {

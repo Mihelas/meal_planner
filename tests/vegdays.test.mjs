@@ -115,9 +115,9 @@ test('yesterday\'s meat dinner is not packed as today\'s vegetarian lunch', () =
 test('a vegetarian office day still sends him to the canteen', () => {
   const settings = { ...S, dayModes: S.dayModes.map(() => 'office') };
   const plan = generateWeek(settings, M);
-  const [nick] = settings.people;
+  const [person1] = settings.people;
   for (const day of vegetarianDaysOf(settings)) {
-    const lunch = plan.days[day].lunch[nick.id];
+    const lunch = plan.days[day].lunch[person1.id];
     assert.equal(lunch.kind, 'canteen',
       `${plan.days[day].name}: a vegetarian day replaced the canteen card`);
   }
