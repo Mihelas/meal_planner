@@ -6,6 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { open, slotName, HTML } from './harness.mjs';
+import { SUPABASE_URL } from '../src/remote.js';
 
 test('the built file boots with no script errors and shows a full week', () => {
   const app = open();
@@ -336,7 +337,18 @@ test('printing hides the app and prints the sheet instead', () => {
 test('the artefact is genuinely self-contained — no network of any kind', () => {
   assert.ok(!/<script[^>]+src=/i.test(HTML), 'an external script would break offline');
   assert.ok(!/<link[^>]+stylesheet/i.test(HTML), 'an external stylesheet would break offline');
-  assert.ok(!/https?:\/\/(?!localhost)/.test(HTML.replace(/https?:\/\/www\.w3\.org[^"']*/g, '')), 'a remote URL is referenced');
+  // Exactly one remote origin is allowed, and not by hard-coding it here: the
+  // one the account module declares. "Self-contained" was always about what the
+  // page *loads* on open -- a script, a stylesheet, a font -- not about whether
+  // an API address appears anywhere in it. That the app never calls that origin
+  // unprompted is a different promise with its own test: tests/account.test.mjs
+  // boots the whole thing against a fetch that throws and nothing touches it.
+  // Anything else hard-coded still fails here.
+  const strays = HTML
+    .replace(/https?:\/\/www\.w3\.org[^"']*/g, '')
+    .split(SUPABASE_URL).join('')
+    .match(/https?:\/\/(?!localhost)[^\s"'<>)]*/g);
+  assert.equal(strays, null, `a remote URL is referenced: ${strays?.join(', ')}`);
   assert.ok(HTML.includes('<meta name="viewport"'), 'it has to work on a phone');
 });
 

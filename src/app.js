@@ -27,6 +27,7 @@ import {
   shoppingList, shoppingByShop, pantryCheck, pantrySaving, prepPlan,
 } from './shopping.js';
 import { createStore, addWeight, weightTrend } from './store.js';
+import { createRemote, describeRemote } from './remote.js';
 import { createSync } from './sync.js';
 import { seasonNote, peakThisMonth, MONTHS } from './seasons.js';
 import {
@@ -94,6 +95,8 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   let importReport = null;       // { added, errors, warnings } from the last import
   let rebalanceReport = null;    // what the last rebalance managed to absorb
   let sync = null;               // the shared-file syncer, created at the end of setup
+  let remote = null;             // the account, created at the end of setup too
+  let accountEmail = '';         // the sign-in box, mid-typing
   let updateReady = false;       // a newer build is sitting in the service worker's cache
 
   /**
@@ -895,6 +898,8 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
 
       ${viewSyncPanel()}
 
+      ${viewAccountPanel()}
+
       <div class="card pad stack" style="margin-top:.9rem">
         <h2 style="font-size:1rem">Never again (${banned.length})</h2>
         ${banned.length === 0 ? '<p class="muted small">Nothing banned yet. The 👎 button on any meal puts it here for good.</p>' : `
@@ -955,6 +960,35 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
         ` : `
           <p class="small muted">Only Chrome and Edge can link a file from a web page. Everywhere else, <b>Export JSON</b> below and <b>Import JSON</b> on the other device does the same job by hand.</p>
         `}
+      </div>`;
+  }
+
+  /**
+   * The account.
+   *
+   * The smallest card in Settings, and last, because it is the least important:
+   * nothing above this line needs one. A link in an email rather than a
+   * password -- there is nothing to remember, no reset flow to build, and
+   * nothing kept on the phone that is worth stealing for long. src/remote.js
+   * has the rest: why the session lives outside the app state, and why being
+   * offline is not treated as having been refused.
+   */
+  function viewAccountPanel() {
+    const st = remote?.status() ?? describeRemote(null);
+    const tone = st.signedIn ? 'good' : st.error ? 'bad' : '';
+    return `
+      <div class="card pad stack" style="margin-top:.9rem" data-panel="account">
+        <h2 style="font-size:1rem">Account</h2>
+        <div class="notice ${tone}">${esc(st.text)}</div>
+        ${st.signedIn ? `
+          <div class="btn-row"><button class="btn ghost" data-act="account-signout">Sign out</button></div>
+          <p class="small muted">Signing out changes nothing on this phone. The week, the list and the weigh-ins stay exactly where they are — it only stops this device talking to the server.</p>
+        ` : `
+          <label class="field"><span>Email</span><input id="account-email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" value="${esc(accountEmail)}"></label>
+          <div class="btn-row"><button class="btn primary" data-act="account-signin">✉️ Email me a link</button></div>
+          <p class="small muted">No password. We send a link; open it <b>on this device</b> and you are in — a link opened somewhere else signs that browser in instead.</p>
+        `}
+        <p class="tiny faint">Signed out is a perfectly good way to use this. The week, the shopping list and the weigh-ins all live on this phone either way; an account is only how a plan reaches a second one.</p>
       </div>`;
   }
 
@@ -1292,6 +1326,8 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     });
     const box = root.querySelector('[data-import]');
     if (box) box.oninput = () => { importText = box.value; };
+    const emailBox = root.querySelector('#account-email');
+    if (emailBox) emailBox.oninput = () => { accountEmail = emailBox.value; };
 
     root.querySelectorAll('[data-del-recipe]').forEach((b) => b.onclick = () => {
       const s = store.state;
@@ -1490,6 +1526,11 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       render();
     });
     act('clear-import', () => { importText = ''; importReport = null; render(); });
+
+    // Both of these report through remote's onChange, which is render(); the
+    // catch is only so a thrown promise cannot become an unhandled rejection.
+    act('account-signin', () => { Promise.resolve(remote?.signIn(accountEmail)).catch(() => {}); });
+    act('account-signout', () => { Promise.resolve(remote?.signOut()).catch(() => {}); });
 
     act('sync-new', () => sync?.link({ create: true }));
     act('sync-open', () => sync?.link({ create: false }));
@@ -1752,6 +1793,15 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   // A debounced write could still be in flight when the tab goes away.
   win?.addEventListener?.('pagehide', () => { sync?.flush?.(); });
 
+  // The account, built for the same reason as the syncer: it renders on every
+  // change. completeFromUrl() is the one thing that has to happen on boot -- a
+  // link from an email arrives as a page load with tokens in the fragment, and
+  // nothing else is listening for them. With no fragment and no stored session
+  // it returns without touching the network, which is what keeps a cold boot
+  // offline-clean.
+  remote = createRemote({ win, onChange: render });
+  Promise.resolve(remote.completeFromUrl()).catch(() => {});
+
   render();
-  return { render, store, sync, get state() { return store.state; } };
+  return { render, store, sync, remote, get state() { return store.state; } };
 }
