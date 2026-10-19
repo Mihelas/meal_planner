@@ -5,6 +5,12 @@ node_modules/
 # nobody edits. The deploy builds it instead.
 dist/
 
+# Working notes, kept on disk and out of the repo. These are the running tracker
+# and a cross-project lessons file -- notes to ourselves about how the work is
+# going, not documentation of the app. The repo is public, so they do not belong
+# in it. README.md is the published account of the project.
+tasks/
+
 # Local scratch and editor noise.
 *.tmp
 *.log
