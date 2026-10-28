@@ -248,10 +248,17 @@ await put(path.join(PWA, 'index.html'), pwaShell);
 await put(path.join(PWA, 'manifest.webmanifest'), `${JSON.stringify(manifest, null, 2)}
 `);
 await put(path.join(PWA, 'sw.js'), sw);
+
+// The custom domain, copied rather than committed into dist/. GitHub Pages reads
+// it out of the published tree, and a deploy replaces that tree wholesale -- so a
+// CNAME that exists only in git un-points the domain on the next push and every
+// phone gets a 404. Deliberately kept out of the cache-version hash above: it is
+// not part of the app, and changing a domain should not re-download 450 kB.
+await put(path.join(PWA, 'CNAME'), await readFile(path.join(root, 'pwa', 'CNAME'), 'utf8'));
 for (const i of ICONS) await put(path.join(PWA, 'icons', i.file), icon(i.size, i.opts));
 
 const kb = (n) => `${(n / 1024).toFixed(0)} kB`;
 console.log(`built ${path.relative(root, OUT)} - ${kb(Buffer.byteLength(single))}, `
   + `${MODULES.length} modules inlined`);
 console.log(`built ${path.relative(root, PWA)}/ - shell, manifest, sw (${version}), `
-  + `${ICONS.length} icons`);
+  + `${ICONS.length} icons, CNAME`);

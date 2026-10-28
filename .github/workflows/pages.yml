@@ -46,13 +46,14 @@ jobs:
 
       - run: node tools/build.mjs
 
-      # The service worker caches './' against its own scope, which on Pages is
-      # /meal_planner/ rather than the root. Catch a shell that hard-coded an
-      # absolute path before it ships a 404 to a phone.
+      # The service worker caches './' against its own scope. That is the root
+      # on pikaeats.com, but it is not the root for the portable single file or
+      # for a preview deploy, and a root-absolute path in the shell breaks both.
+      # Catch it before it ships a 404 to a phone.
       - name: Check the build is path-independent
         run: |
           if grep -qE '(href|src)="/' dist/pwa/index.html; then
-            echo 'the shell has a root-absolute URL, which breaks under /meal_planner/'
+            echo 'the shell has a root-absolute URL, which breaks anywhere but a domain root'
             grep -nE '(href|src)="/' dist/pwa/index.html
             exit 1
           fi

@@ -9,6 +9,9 @@ The deliverable is a single file — `dist/meal-planner.html`. Double-click it. 
 server, no internet, no install. It remembers everything in the browser it was
 opened in.
 
+On a phone, open **[pikaeats.com](https://pikaeats.com)** and add it to the home
+screen. Same app, installable, and it keeps working with no signal.
+
 ## Using it
 
 | Button | What it does |
@@ -58,11 +61,27 @@ shared file that cannot be read or parsed is **never written over**.
 **Export your data** (Settings) before switching browser or clearing site data.
 Nothing is uploaded anywhere — the sync file is a file on your own disk.
 
+## Where it lives
+
+`pikaeats.com`, served by GitHub Pages from `dist/pwa/` on every push to `main`.
+The domain is pointed by `pwa/CNAME`, which the build copies into the published
+tree — Pages reads it from there, not from the repository, and a deploy replaces
+that tree wholesale, so a CNAME that is only committed un-points the domain on
+the next push. `tests/pwa.test.mjs` fails if the build stops copying it.
+
+Every path in the app is relative (`start_url`, `scope`, the worker registration,
+every asset). That is what let the app move from a project subpath to a domain
+root without a code change, and it is what keeps the portable single file working
+from a Downloads folder, where there is no origin at all.
+
+Supabase's own settings — the ones that cannot live in a migration — are written
+down in `supabase/dashboard.md`.
+
 ## Working on it
 
 ```
-npm test      # 448 tests, no browser needed
-npm run build # src/*.js -> dist/meal-planner.html (355 kB, 10 modules inlined)
+npm test      # 636 tests, no browser needed
+npm run build # src/*.js -> dist/meal-planner.html (490 kB, 12 modules inlined)
 npm run serve # http://localhost:4173, for poking at it
 ```
 
@@ -80,6 +99,8 @@ npm run serve # http://localhost:4173, for poking at it
 - `src/shopping.js` — list by shop then aisle, pack rounding, the cupboard, prep jobs.
 - `src/store.js` — localStorage with defensive migration, export/import, weight log,
   your own recipes.
+- `src/remote.js` — the account: email sign-in by link or 6-digit code, the session
+  in its own storage key, and silent refresh. Knows nothing about meals.
 - `src/sync.js` — the shared-file link. Transport (File System Access API + a handle in
   IndexedDB) is separate from `mergeStates`, which is pure and knows nothing about files.
 - `src/ui.js` / `src/app.js` — stylesheet and shell / all the DOM.

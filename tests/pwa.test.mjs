@@ -42,8 +42,9 @@ test('the manifest is JSON a browser will accept', () => {
 });
 
 test('the manifest paths are relative, so the app works on any path', () => {
-  // Cloudflare Pages serves from the root, but a preview deploy or a project
-  // subpath does not, and an absolute "/" start_url silently escapes the scope.
+  // The app sits at a domain root now, but the portable file does not sit
+  // anywhere at all, and a preview deploy sits on a subpath. An absolute "/"
+  // start_url silently escapes the scope in both.
   for (const key of ['start_url', 'scope']) {
     assert.ok(!MANIFEST[key].startsWith('/'),
       `${key} is absolute ("${MANIFEST[key]}") and will break on a subpath`);
@@ -88,6 +89,26 @@ test('iOS gets an apple-touch-icon, because it ignores the manifest', () => {
   assert.match(SHELL, /<link rel="apple-touch-icon"[^>]*href="([^"]+)"/);
   const href = SHELL.match(/<link rel="apple-touch-icon"[^>]*href="([^"]+)"/)[1];
   assert.ok(existsSync(dist('pwa', ...href.split('/'))), `apple-touch-icon ${href} was not written`);
+});
+
+// --- The host.
+
+test('the custom domain ships in the artefact, or the domain stops resolving', () => {
+  // GitHub Pages reads CNAME out of the published tree, not out of the
+  // repository, and a deploy replaces that tree wholesale. If the build ever
+  // stops copying it, the next push silently un-points the domain and every
+  // phone with the app installed gets a 404 from an address that worked
+  // yesterday. Nothing else would catch that before a person did.
+  assert.ok(existsSync(dist('pwa', 'CNAME')), 'the build did not write dist/pwa/CNAME');
+  const raw = read('pwa', 'CNAME');
+  const domain = raw.trim();
+  assert.equal(domain, readFileSync(path.join(root, 'pwa', 'CNAME'), 'utf8').trim(),
+    'dist/pwa/CNAME disagrees with pwa/CNAME, so the build is not copying the source of truth');
+  // Pages wants one bare hostname. A scheme, a path, or a second line is not an
+  // error you see -- the custom domain setting is just dropped.
+  assert.equal(raw, `${domain}\n`, `CNAME should be one bare hostname and a newline, got ${JSON.stringify(raw)}`);
+  assert.match(domain, /^[a-z0-9-]+(\.[a-z0-9-]+)+$/,
+    `CNAME should be a bare hostname, got "${domain}"`);
 });
 
 // --- The service worker.

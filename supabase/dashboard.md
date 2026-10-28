@@ -12,20 +12,21 @@ sign-in stopped working.
 **Site URL**
 
 ```
-https://mihelas.github.io/meal_planner/
+https://pikaeats.com
 ```
 
 **Redirect URLs** — add
 
 ```
-https://mihelas.github.io/meal_planner/**
+https://pikaeats.com/**
 ```
 
-The `**` is not decoration. GitHub Pages serves the same page at both
-`/meal_planner/` and `/meal_planner/index.html`, and a redirect URL without a
-wildcard matches only the one spelling it was written as. When `redirect_to`
-does not match, Supabase does not fail loudly — it silently redirects to the
-**Site URL** instead. That is why a bad allow-list shows up as landing on
+The `**` is not decoration, even now the app sits at a domain root. GitHub Pages
+serves the same page at both `https://pikaeats.com/` and
+`https://pikaeats.com/index.html`, and a redirect URL without a wildcard matches
+only the one spelling it was written as. When `redirect_to` does not match,
+Supabase does not fail loudly — it silently redirects to the **Site URL**
+instead. That is why a bad allow-list showed up as landing on
 `http://localhost:3000/#error=...`: `localhost:3000` is the factory default Site
 URL, and the app was never there to read the error.
 
@@ -111,13 +112,28 @@ With custom SMTP configured, auth email goes to **all** addresses, and the cap
 becomes a default of **30 per hour**, adjustable at
 `Authentication → Rate Limits` (`/project/_/auth/rate-limits`).
 
-Any provider works. For two people a free tier is far more than enough —
-[Brevo](https://www.brevo.com) (EU-hosted, 300/day free) and
-[Resend](https://resend.com) (3,000/month free) are both fine. Supabase needs
-host, port, username, password, sender address and sender name.
+We use [Resend](https://resend.com) (3,000/month free, 100/day). Per
+[its SMTP docs](https://resend.com/docs/send-with-smtp):
 
-The sender address must be on a domain the provider has verified, or the mail
-lands in spam when it is accepted at all.
+```
+Host      smtp.resend.com
+Port      587
+Username  resend
+Password  <a Resend API key>
+```
+
+Sender address `no-reply@pikaeats.com`, sender name `Pika Eats`.
+
+**The sender domain must be verified in Resend.** The `onboarding@resend.dev`
+address is for testing only and
+[delivers solely to the address that owns the Resend account](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain)
+-- which reproduces, exactly, the Supabase limitation we are here to escape.
+`pikaeats.com` is registered for this; add it under Domains → Add Domain, paste
+the DNS records Resend hands you into the registrar, and wait for the status to
+read verified before expecting mail to reach anyone else.
+
+The API key is a secret. It goes in the Supabase dashboard and nowhere else --
+not in this repository, not in a commit message, not pasted into a chat.
 
 ---
 

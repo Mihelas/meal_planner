@@ -192,7 +192,12 @@ test('asking for a link remembers the address, so a code can be checked after a 
   assert.equal(r.pendingEmail(), 'someone@example.com', 'the normalised address was not kept');
   // The phone is very likely to be evicted from memory while the mail app is
   // open, so this has to survive a reload rather than living in a closure.
-  assert.equal(pendingStore(win).get()?.email, 'someone@example.com');
+  //
+  // Read on T0, the same clock signIn() wrote with. Letting `get()` default to
+  // the real Date.now() made this test pass on the day it was written and fail
+  // every day after: the record is stamped at T0, the TTL is 24 hours, and the
+  // wall clock walks away from a frozen constant at exactly one day per day.
+  assert.equal(pendingStore(win).get(T0)?.email, 'someone@example.com');
 });
 
 test('a code is exchanged for a session, with the address it was sent to', async () => {
