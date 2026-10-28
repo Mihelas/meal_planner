@@ -110,9 +110,14 @@ test('once a link is sent there is somewhere to type the code from the email', a
   app.click('[data-act="account-verify"]');
   await new Promise((r) => setTimeout(r, 0));
 
-  assert.equal(fetch.calls.length, 2, `${fetch.calls.length} requests went out`);
-  assert.match(fetch.calls[1].url, /\/auth\/v1\/verify$/);
-  assert.deepEqual(fetch.calls[1].body, { email: 'someone@example.com', token: '123456', type: 'email' });
+  // The account's own requests, not every request: signing in is also what
+  // tells the household card to go and look, and that read is not this test's
+  // business. The count still says the link was asked for once and the code
+  // sent once.
+  const auth = fetch.calls.filter((c) => /\/auth\/v1\/(otp|verify)$/.test(c.url));
+  assert.equal(auth.length, 2, `${auth.length} account requests went out`);
+  assert.match(auth[1].url, /\/auth\/v1\/verify$/);
+  assert.deepEqual(auth[1].body, { email: 'someone@example.com', token: '123456', type: 'email' });
   assert.match(app.$('[data-panel="account"]').textContent, /signed in/i);
   assert.deepEqual(app.errors, []);
 });

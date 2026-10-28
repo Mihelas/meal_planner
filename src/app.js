@@ -28,6 +28,7 @@ import {
 } from './shopping.js';
 import { createStore, addWeight, weightTrend } from './store.js';
 import { createRemote, describeRemote } from './remote.js';
+import { createHouseholds } from './household.js';
 import { createSync } from './sync.js';
 import { seasonNote, peakThisMonth, MONTHS } from './seasons.js';
 import {
@@ -98,6 +99,25 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   let remote = null;             // the account, created at the end of setup too
   let accountEmail = '';         // the sign-in box, mid-typing
   let accountCode = '';          // the code-from-the-email box, mid-typing
+  let houses = null;             // the household client, created with the account
+  // `null` is "not asked yet" and `[]` is "asked, and in none" -- two states the
+  // card has to tell apart, because one of them is a reason to ask and the other
+  // is a reason to offer a Start button.
+  let hhList = null;
+  let hhMembers = {};            // household id -> the people in it
+  let hhInvites = {};            // household id -> the codes still out
+  let hhError = null;
+  let hhAsked = false;           // asked once for this sign-in, right or wrong
+  let hhBusy = false;            // the guard that keeps render() from fetching twice
+  let hhName = '';               // the new-household box, mid-typing
+  let hhRename = '';             // the rename box, mid-typing
+  let hhCode = '';               // the join box, mid-typing
+  // The invite just made, kept where a failed re-read cannot lose it: the code
+  // comes back from create_invite once and once only, and an invite nobody saw
+  // is worse than none -- it holds the seat, and you cannot revoke what you
+  // were never shown.
+  let hhFresh = null;            // {id, seat, code}
+  let hhCopied = null;           // the code last put on the clipboard
   let updateReady = false;       // a newer build is sitting in the service worker's cache
 
   /**
@@ -161,6 +181,10 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
 
   // --------------------------------------------------------------- rendering
   function render() {
+    // Before the HTML, and outside it: the card needs data this may have to go
+    // and get, and a render triggered by that arriving must find the flag
+    // already set or the two would call each other for ever.
+    householdFollowsAccount();
     const s = store.state;
     const tab = s.ui.tab ?? 'week';
     root.innerHTML = `
@@ -901,6 +925,8 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
 
       ${viewAccountPanel()}
 
+      ${viewHouseholdPanel()}
+
       <div class="card pad stack" style="margin-top:.9rem">
         <h2 style="font-size:1rem">Never again (${banned.length})</h2>
         ${banned.length === 0 ? '<p class="muted small">Nothing banned yet. The 👎 button on any meal puts it here for good.</p>' : `
@@ -999,6 +1025,226 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
           <p class="small muted">No password. The email has both a link and a 6-digit code; either one signs in the browser it is used in, so use them <b>on this device</b>.</p>
         `}
         <p class="tiny faint">Signed out is a perfectly good way to use this. The week, the shopping list and the weigh-ins all live on this phone either way; an account is only how a plan reaches a second one.</p>
+      </div>`;
+  }
+
+  // ----------------------------------------------------------------- household
+  //
+  // The card is read-through: it asks once per sign-in, and again after anything
+  // it changes. The load is driven by the account rather than by the card
+  // appearing, because render() runs on every keystroke -- a fetch anywhere
+  // inside it would be a fetch per keystroke, and a render() at the end of that
+  // fetch would be a loop.
+
+  /** The plan's own name for a seat. Nobody answers to `person2`. */
+  function seatName(seat) {
+    return store.state.settings.people.find((p) => p.id === seat)?.name || seat;
+  }
+
+  /** The seats nobody holds and nobody has been offered. */
+  function freeSeats(id) {
+    const taken = new Set([
+      ...(hhMembers[id] ?? []).map((m) => m.seat),
+      ...(hhInvites[id] ?? []).map((i) => i.seat),
+    ]);
+    return store.state.settings.people.map((p) => p.id).filter((pid) => !taken.has(pid));
+  }
+
+  /** How long an invite has left, in the unit a person would say it in. */
+  function invitePeriod(iso) {
+    const left = Date.parse(iso) - Date.now();
+    if (!Number.isFinite(left) || left <= 0) return 'expiring now';
+    const days = Math.round(left / 86_400_000);
+    if (days >= 1) return `${days} day${days === 1 ? '' : 's'} left`;
+    const hours = Math.max(1, Math.round(left / 3_600_000));
+    return `${hours} hour${hours === 1 ? '' : 's'} left`;
+  }
+
+  /**
+   * One pass: the households, then what is in each.
+   *
+   * Members and invites go out together per household rather than one after the
+   * other, because they are independent reads and the card needs both before it
+   * can say anything. Invites are only asked for where you are the owner --
+   * `pending invites, to the owner` in 0002 answers a member with an empty list,
+   * which is indistinguishable from there being none.
+   */
+  async function loadHouseholds({ keepError = false } = {}) {
+    if (!houses || hhBusy) return;
+    hhBusy = true;
+    hhAsked = true;
+    try {
+      const got = await houses.mine();
+      if (!got.ok) { hhError = got.error; return; }
+      const members = {};
+      const invites = {};
+      let trouble = null;
+      await Promise.all(got.households.map(async (h) => {
+        const [m, i] = await Promise.all([
+          houses.members(h.id),
+          h.role === 'owner' ? houses.invites(h.id) : Promise.resolve({ ok: true, invites: [] }),
+        ]);
+        if (m.ok) members[h.id] = m.members; else trouble ??= m.error;
+        if (i.ok) invites[h.id] = i.invites; else trouble ??= i.error;
+      }));
+      hhList = got.households;
+      hhMembers = members;
+      hhInvites = invites;
+      if (!keepError) hhError = trouble;
+    } finally {
+      hhBusy = false;
+      render();
+    }
+  }
+
+  /**
+   * Run one household call, then show what the server now thinks.
+   *
+   * A refused call is not followed by a re-read: nothing changed, so there is
+   * nothing new to read, and reading anyway would be one more chance to lose the
+   * sentence that explains the refusal.
+   */
+  function household(fn, done) {
+    if (hhBusy) return;
+    hhBusy = true;
+    hhError = null;
+    // Any other action puts the last code away; the one that made it puts it
+    // back in `done` below.
+    hhFresh = null;
+    render();
+    Promise.resolve(fn())
+      .then((r) => {
+        hhBusy = false;
+        if (!r?.ok) { hhError = r?.error ?? 'That did not work.'; render(); return undefined; }
+        confirming = null;
+        done?.(r);
+        return loadHouseholds();
+      })
+      .catch((e) => {
+        hhBusy = false;
+        hhError = String(e?.message ?? e);
+        render();
+      });
+  }
+
+  /** Ask when the account arrives, and forget when it goes. */
+  function householdFollowsAccount() {
+    if (!remote?.signedIn?.()) {
+      if (hhAsked || hhList) {
+        hhAsked = false; hhList = null; hhMembers = {}; hhInvites = {};
+        hhError = null; hhCode = ''; hhName = ''; hhRename = ''; hhFresh = null;
+        hhCopied = null;
+      }
+      return;
+    }
+    if (!hhAsked && !hhBusy) Promise.resolve(loadHouseholds()).catch(() => {});
+  }
+
+  /**
+   * The household.
+   *
+   * Only for an account, because it is the only thing in Settings that cannot
+   * work without one. A member's seat is a person in the plan, so everybody is
+   * named the way the week names them rather than by the address they signed up
+   * with -- this card is read by two people who know each other.
+   */
+  function viewHouseholdPanel() {
+    if (!remote?.signedIn?.()) return '';
+    const unknown = hhList === null;
+    return `
+      <div class="card pad stack" style="margin-top:.9rem" data-panel="household">
+        <h2 style="font-size:1rem">Household</h2>
+        ${hhError ? `<div class="notice bad">${esc(hhError)}</div>` : ''}
+        ${unknown
+    ? (hhBusy
+      ? '<p class="small muted">Looking…</p>'
+      : '<div class="btn-row"><button class="btn ghost" data-act="hh-retry">Try again</button></div>')
+    : hhList.length === 0
+      ? '<p class="small muted">You are <b>not in a household</b> yet. Start one and invite her, or type in the code she sent you.</p>'
+      : hhList.map(viewOneHousehold).join('')}
+        ${unknown ? '' : viewHouseholdForms()}
+        <p class="tiny faint">A household is who a plan is shared with. The week on this phone is yours either way — joining one does not hand it over.</p>
+      </div>`;
+  }
+
+  function viewOneHousehold(h) {
+    const owner = h.role === 'owner';
+    const people = hhMembers[h.id] ?? [];
+    const out = hhInvites[h.id] ?? [];
+    const fresh = hhFresh?.id === h.id ? hhFresh : null;
+    // Only where there is a clipboard to copy to. The code is on screen either
+    // way, and a Copy button that cannot copy is worse than no button.
+    const copy = (code) => (win?.navigator?.clipboard
+      ? `<button class="btn ghost tiny" data-act="hh-copy" data-code="${esc(code)}">${hhCopied === code ? 'Copied' : 'Copy'}</button>`
+      : '');
+    // Only an owner can invite, so only an owner is offered a free seat. The
+    // seats already spoken for include the invites still out: offering one of
+    // those again would be a guaranteed 23505 two taps later.
+    const free = owner ? freeSeats(h.id) : [];
+    const asking = confirming === `hh-leave:${h.id}` ? 'leave'
+      : confirming === `hh-delete:${h.id}` ? 'delete'
+        : confirming === `hh-rename:${h.id}` ? 'rename' : null;
+    return `
+      <div class="stack" data-household="${esc(h.id)}">
+        <div class="btn-row">
+          <b class="grow">${esc(h.name)}</b>
+          <span class="tiny faint">${owner ? 'you are the owner' : 'you are a member'}</span>
+        </div>
+        ${people.length ? `<table><tbody>${people.map((m) => `
+          <tr>
+            <td>${esc(m.displayName || seatName(m.seat))}${m.you ? ' <span class="tiny faint">(you)</span>' : ''}</td>
+            <td class="faint small">${esc(seatName(m.seat))}</td>
+            <td class="faint small num">${esc(m.role)}</td>
+          </tr>`).join('')}</tbody></table>` : ''}
+        ${fresh ? `<div class="notice good">Her code is <b>${esc(fresh.code)}</b> ${copy(fresh.code)} — read it out or send it over. It is for ${esc(seatName(fresh.seat))}, works once, and lasts a week.</div>` : ''}
+        ${out.map((i) => `
+          <div class="btn-row">
+            <b class="grow">${esc(i.code)}</b>
+            <span class="tiny faint">for ${esc(seatName(i.seat))} · ${esc(invitePeriod(i.expiresAt))}</span>
+            ${copy(i.code)}
+            <button class="btn ghost tiny" data-act="hh-revoke" data-code="${esc(i.code)}">revoke</button>
+          </div>`).join('')}
+        ${free.length ? `<div class="btn-row">${free.map((seat) => `
+          <button class="btn ghost small" data-act="hh-invite" data-id="${esc(h.id)}" data-seat="${esc(seat)}">Invite ${esc(seatName(seat))}</button>`).join('')}</div>` : ''}
+        ${asking === 'rename' ? `
+          <div class="btn-row">
+            <input class="grow" id="hh-rename" value="${esc(hhRename)}" placeholder="${esc(h.name)}" aria-label="New name">
+            <button class="btn primary small" data-act="hh-rename-go" data-id="${esc(h.id)}">Save</button>
+            <button class="btn ghost small" data-act="hh-cancel">Cancel</button>
+          </div>` : asking === 'leave' ? `
+          <div class="btn-row">
+            <span class="small grow">Leave ${esc(h.name)}? The week on this phone stays exactly as it is.</span>
+            <button class="btn danger" data-act="hh-leave-go" data-id="${esc(h.id)}">Yes, leave</button>
+            <button class="btn ghost" data-act="hh-cancel">Cancel</button>
+          </div>` : asking === 'delete' ? `
+          <div class="btn-row">
+            <span class="small grow">Delete ${esc(h.name)} for everyone? The shared plan goes with it.</span>
+            <button class="btn danger" data-act="hh-delete-go" data-id="${esc(h.id)}">Yes, delete it</button>
+            <button class="btn ghost" data-act="hh-cancel">Cancel</button>
+          </div>` : `
+          <div class="btn-row">
+            ${owner ? `<button class="btn ghost small" data-act="hh-rename" data-id="${esc(h.id)}" data-name="${esc(h.name)}">Rename</button>` : ''}
+            <span class="spacer"></span>
+            <button class="btn ghost small" data-act="hh-leave" data-id="${esc(h.id)}">Leave</button>
+            ${owner ? `<button class="btn danger ghost small" data-act="hh-delete" data-id="${esc(h.id)}">Delete</button>` : ''}
+          </div>`}
+      </div>`;
+  }
+
+  /** Start one, or join one. Always both: more than one household is allowed. */
+  function viewHouseholdForms() {
+    const some = (hhList ?? []).length > 0;
+    return `
+      <div class="stack" style="margin-top:.4rem">
+        ${some ? '<p class="tiny faint">Another household, if somebody else wants to share a week with you:</p>' : ''}
+        <div class="btn-row">
+          <input class="grow" id="hh-name" value="${esc(hhName)}" placeholder="Home" aria-label="Name for a new household">
+          <button class="btn ${some ? 'ghost' : 'primary'} small" data-act="hh-create">Start${some ? ' another' : ' a household'}</button>
+        </div>
+        <div class="btn-row">
+          <input class="grow" id="hh-code" value="${esc(hhCode)}" placeholder="Invite code" autocomplete="off" aria-label="Invite code">
+          <button class="btn ${some ? 'ghost' : 'primary'} small" data-act="hh-join">Join with a code</button>
+        </div>
       </div>`;
   }
 
@@ -1340,6 +1586,17 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     if (emailBox) emailBox.oninput = () => { accountEmail = emailBox.value; };
     const codeBox = root.querySelector('#account-code');
     if (codeBox) codeBox.oninput = () => { accountCode = codeBox.value; };
+    // Kept outside the DOM for the same reason as the sign-in boxes: render()
+    // rebuilds this panel on every change, and a value only in the input is a
+    // value that disappears when somebody else's sync lands mid-sentence.
+    for (const [sel, set] of [
+      ['#hh-name', (v) => { hhName = v; }],
+      ['#hh-code', (v) => { hhCode = v; }],
+      ['#hh-rename', (v) => { hhRename = v; }],
+    ]) {
+      const box = root.querySelector(sel);
+      if (box) box.oninput = () => set(box.value);
+    }
 
     root.querySelectorAll('[data-del-recipe]').forEach((b) => b.onclick = () => {
       const s = store.state;
@@ -1549,6 +1806,49 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     act('account-resend', () => { Promise.resolve(remote?.signIn(remote?.pendingEmail())).catch(() => {}); });
     act('account-cancel', () => { accountCode = ''; remote?.cancelSignIn(); });
     act('account-signout', () => { accountCode = ''; Promise.resolve(remote?.signOut()).catch(() => {}); });
+
+    // The household. Everything that changes something goes through household(),
+    // which is the single place a refusal is turned into a sentence on screen
+    // rather than a button that looked like it worked.
+    act('hh-retry', () => { hhError = null; Promise.resolve(loadHouseholds()).catch(() => {}); });
+    // The creator takes the first seat in the plan and invites into the others.
+    // Seats are per household, so her own household has her in seat one too.
+    act('hh-create', () => household(
+      () => houses?.create(hhName, store.state.settings.people[0].id),
+      () => { hhName = ''; },
+    ));
+    act('hh-join', () => household(() => houses?.join(hhCode), () => { hhCode = ''; }));
+    act('hh-invite', (el) => household(
+      () => houses?.invite(el.dataset.id, el.dataset.seat),
+      (r) => { hhFresh = { id: el.dataset.id, seat: el.dataset.seat, code: r.code }; },
+    ));
+    act('hh-revoke', (el) => household(() => houses?.revoke(el.dataset.code)));
+    // Two presses rather than a confirm(), for the reason given above `reset`.
+    act('hh-leave', (el) => { confirming = `hh-leave:${el.dataset.id}`; render(); });
+    act('hh-leave-go', (el) => household(() => houses?.leave(el.dataset.id)));
+    act('hh-delete', (el) => { confirming = `hh-delete:${el.dataset.id}`; render(); });
+    act('hh-delete-go', (el) => household(() => houses?.remove(el.dataset.id)));
+    act('hh-rename', (el) => {
+      // Seeded with the current name so renaming is an edit, not a retype.
+      hhRename = el.dataset.name ?? '';
+      confirming = `hh-rename:${el.dataset.id}`;
+      render();
+    });
+    act('hh-rename-go', (el) => household(
+      () => houses?.rename(el.dataset.id, hhRename),
+      () => { hhRename = ''; },
+    ));
+    act('hh-cancel', () => { confirming = null; hhRename = ''; render(); });
+    act('hh-copy', (el) => {
+      const code = el.dataset.code ?? '';
+      const clip = win?.navigator?.clipboard;
+      if (!clip?.writeText) return;
+      Promise.resolve(clip.writeText(code))
+        .then(() => { hhCopied = code; render(); })
+        // A refused clipboard does not deserve a sentence: the code is on the
+        // screen it was copied from, and reading it out was always the fallback.
+        .catch(() => {});
+    });
 
     act('sync-new', () => sync?.link({ create: true }));
     act('sync-open', () => sync?.link({ create: false }));
@@ -1818,6 +2118,10 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   // it returns without touching the network, which is what keeps a cold boot
   // offline-clean.
   remote = createRemote({ win, onChange: render });
+  // The households client is the account with a different question asked of it:
+  // it holds no state, so it is built here rather than lazily, and it shares the
+  // window's fetch so a test that fakes one fakes both.
+  houses = createHouseholds({ remote, fetch: win?.fetch ? win.fetch.bind(win) : globalThis.fetch });
   Promise.resolve(remote.completeFromUrl()).catch(() => {});
 
   render();

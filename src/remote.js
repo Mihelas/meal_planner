@@ -64,6 +64,7 @@ export const OTP_PATH = '/auth/v1/otp';
 export const TOKEN_PATH = '/auth/v1/token';
 export const LOGOUT_PATH = '/auth/v1/logout';
 export const VERIFY_PATH = '/auth/v1/verify';
+export const USER_PATH = '/auth/v1/user';
 
 /**
  * How early to renew. Two minutes covers a slow request on a train plus any
@@ -278,6 +279,13 @@ export function createRemote({
   // tick must share one request: Supabase rotates the refresh token on use, so
   // parallel refreshes race to invalidate each other.
   let refreshing = null;
+  // The account id, when the session in hand did not come with one.
+  // `sessionFromHash` builds a session out of URL fragments, and those carry no
+  // user object: between following an email link and the first refresh, an
+  // otherwise perfectly good session knows the email address and not the id.
+  // Households are keyed on the id, so that gap is a real one. Cached because
+  // it cannot change without a different session replacing this one.
+  let knownId = null;
 
   // `sent` is derived rather than held: the stored address IS the fact that a
   // code is on its way, and deriving it means the code box is still there after
@@ -289,8 +297,8 @@ export function createRemote({
   };
   const changed = () => onChange(state());
 
-  const store = (s) => { session.set(s); pending.clear(); changed(); };
-  const forget = () => { session.clear(); changed(); };
+  const store = (s) => { knownId = s?.userId ?? null; session.set(s); pending.clear(); changed(); };
+  const forget = () => { knownId = null; session.clear(); changed(); };
 
   async function call(path, { method = 'POST', body, token } = {}) {
     const headers = { apikey: key, 'content-type': 'application/json' };
@@ -435,6 +443,26 @@ export function createRemote({
       if (expiresInMs(s, now()) > REFRESH_SKEW_MS) return s.accessToken;
       const r = await this.refresh();
       return r.ok ? session.get()?.accessToken ?? null : null;
+    },
+
+    /**
+     * Who is signed in, as the id the database keys membership on.
+     *
+     * Prefers what the session already carries and asks at most once per
+     * sign-in. Null is an ordinary answer, and means the same as a null token:
+     * not now. A caller that needs the id must treat null as "ask again later",
+     * never as "this is somebody else".
+     */
+    async userId() {
+      const s = session.get();
+      if (s?.userId) return s.userId;
+      if (knownId) return knownId;
+      const token = await this.accessToken();
+      if (!token) return null;
+      const r = await call(USER_PATH, { method: 'GET', token });
+      if (!r.ok) return null;
+      knownId = r.payload?.id ?? null;
+      return knownId;
     },
 
     /** Renew, once, however many callers ask at the same moment. */

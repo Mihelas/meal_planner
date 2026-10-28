@@ -304,6 +304,31 @@ await check('the last member leaving takes the household with it', async () => {
   expect(after.json?.length === 0, 'A can still see a household it walked out of');
 });
 
+await check('an owner walking out leaves an owner behind', async () => {
+  // A throwaway, so the layout the isolation checks above rely on is untouched.
+  const shared = await ensureHousehold(A, 'Isolation test handover', 'a-owner');
+  const code = await rpc(A, 'create_invite', { target_household: shared, seat: 'b-guest' });
+  expect(typeof code.json === 'string', `no invite was issued: ${code.text.slice(0, 160)}`);
+  const joined = await rpc(B, 'redeem_invite', { invite_code: code.json });
+  expect(joined.status < 300, `B could not join: ${joined.text.slice(0, 160)}`);
+
+  // The owner leaves while B is still in it. 0002 allows exactly this, and 0007
+  // is the only thing standing between it and a household nobody can manage.
+  await leaveHousehold(A, AID, shared);
+
+  const after = await api(
+    `/rest/v1/household_members?household_id=eq.${shared}&select=user_id,role`,
+    { token: B });
+  expect(after.json?.length === 1, `expected B alone, got ${JSON.stringify(after.json)}`);
+  expect(after.json[0].role === 'owner',
+    `B was left as '${after.json[0].role}', so nothing can rename or delete this household again`);
+
+  // And prove the role is load-bearing rather than cosmetic: the whole point of
+  // promoting is that delete_household starts answering this account again.
+  const binned = await rpc(B, 'delete_household', { target_household: shared });
+  expect(binned.status < 300, `the promoted owner still cannot delete: ${binned.text.slice(0, 160)}`);
+});
+
 await check('an owner alone in a household can bin it', async () => {
   const doomed = await ensureHousehold(A, 'Isolation test delete', 'only-me');
   const r = await rpc(A, 'delete_household', { target_household: doomed });

@@ -24,7 +24,7 @@ const OUT = path.join(root, 'dist', 'meal-planner.html');
 const PWA = path.join(root, 'dist', 'pwa');
 
 // Dependency order: a module may only import from ones earlier in this list.
-const MODULES = ['targets.js', 'recipes.js', 'seasons.js', 'planner.js', 'swap.js', 'shopping.js', 'store.js', 'remote.js', 'sync.js', 'install.js', 'ui.js', 'app.js'];
+const MODULES = ['targets.js', 'recipes.js', 'seasons.js', 'planner.js', 'swap.js', 'shopping.js', 'store.js', 'remote.js', 'household.js', 'sync.js', 'install.js', 'ui.js', 'app.js'];
 
 const RE_IMPORT = /^import\s*\{([\s\S]*?)\}\s*from\s*'\.\/([\w.-]+)'\s*;?\s*$/gm;
 const RE_ANY_IMPORT = /^\s*import\s/m;
@@ -164,7 +164,19 @@ async function put(file, data) {
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   await writeFile(tmp, data);
-  await rename(tmp, file);
+  // Windows refuses to rename over a file another process holds open, and the
+  // harness has several builds racing several readers. The rename is still what
+  // makes this all-or-nothing; it just has to wait its turn sometimes, and a
+  // build that throws here fails a whole test file for no reason at all.
+  for (let left = 20; ; left -= 1) {
+    try {
+      await rename(tmp, file);
+      break;
+    } catch (e) {
+      if (left <= 0 || !['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) throw e;
+      await new Promise((r) => { setTimeout(r, 25); });
+    }
+  }
   return data.length ?? Buffer.byteLength(data);
 }
 

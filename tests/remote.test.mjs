@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SESSION_KEY, PENDING_KEY, REFRESH_SKEW_MS,
-  OTP_PATH, TOKEN_PATH, LOGOUT_PATH, VERIFY_PATH,
+  OTP_PATH, TOKEN_PATH, LOGOUT_PATH, VERIFY_PATH, USER_PATH,
   normaliseSession, isExpired, expiresInMs, sessionFromHash,
   memorySession, sessionStore, pendingStore, describeRemote, createRemote,
 } from '../src/remote.js';
@@ -467,6 +467,59 @@ test('signing out tells the server too, with the token it is revoking', async ()
   const [call] = fetch.calls;
   assert.ok(call.url.endsWith(LOGOUT_PATH), `posted to ${call.url}`);
   assert.equal(call.headers.authorization, 'Bearer at-1');
+});
+
+// ---------------------------------------------------------- who is signed in
+//
+// Households are keyed on the account id, and the one case that matters is the
+// one a happy path never reaches: a session built out of a magic-link URL has
+// no user object in it at all.
+
+test('an id the session already carries costs nothing to read', async () => {
+  const fetch = fakeFetch([jsonReply(200, { id: 'u-wrong' })]);
+  const id = await remote({ fetch, session: memorySession(freshFor(60)) }).userId();
+  assert.equal(id, 'u-1');
+  assert.equal(fetch.calls.length, 0, 'it asked the server something it already knew');
+});
+
+test('a session that came from an email link learns who it belongs to, once', async () => {
+  // Exactly what sessionFromHash() builds: tokens and an expiry, no user.
+  const fetch = fakeFetch([jsonReply(200, { id: 'u-7', email: 'someone@example.com' })]);
+  const session = memorySession(freshFor(60, { userId: null }));
+  const r = remote({ fetch, session });
+
+  assert.equal(await r.userId(), 'u-7');
+  assert.equal(await r.userId(), 'u-7', 'the second read should be free');
+  assert.equal(fetch.calls.length, 1, 'the id was fetched more than once');
+  const [call] = fetch.calls;
+  assert.ok(call.url.endsWith(USER_PATH), `asked ${call.url}`);
+  assert.equal(call.method, 'GET');
+  assert.equal(call.headers.authorization, 'Bearer at-1');
+});
+
+test('signed out, nobody is signed in and nothing is asked', async () => {
+  const fetch = fakeFetch([jsonReply(200, { id: 'u-7' })]);
+  assert.equal(await remote({ fetch, session: memorySession() }).userId(), null);
+  assert.equal(fetch.calls.length, 0);
+});
+
+test('an id that cannot be fetched is null, not a crash and not a guess', async () => {
+  for (const f of [offline, fakeFetch([jsonReply(401, { message: 'bad jwt' })])]) {
+    const session = memorySession(freshFor(60, { userId: null }));
+    assert.equal(await remote({ fetch: f, session }).userId(), null);
+  }
+});
+
+test('an id does not outlive the session it belonged to', async () => {
+  // The cache is per sign-in, and a shared phone is the whole reason to care:
+  // an id left behind would attach her plan to his household.
+  const fetch = fakeFetch([jsonReply(200, { id: 'u-7' })]);
+  const session = memorySession(freshFor(60, { userId: null }));
+  const r = remote({ fetch, session });
+  assert.equal(await r.userId(), 'u-7');
+
+  await r.signOut();
+  assert.equal(await r.userId(), null, 'the id outlived the session it belonged to');
 });
 
 // ------------------------------------------------- where the token is kept
