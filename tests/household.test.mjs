@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHouseholds, humanise } from '../src/household.js';
+import { createHouseholds } from '../src/household.js';
+import { humanise } from '../src/rest.js';
 
 // ---------------------------------------------------------------- the fakes
 //

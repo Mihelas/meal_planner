@@ -26,9 +26,12 @@ import {
 import {
   shoppingList, shoppingByShop, pantryCheck, pantrySaving, prepPlan,
 } from './shopping.js';
-import { createStore, addWeight, weightTrend } from './store.js';
+import {
+  createStore, addWeight, weightTrend, migrate, mergeStates, cloudDoc, sameDoc,
+} from './store.js';
 import { createRemote, describeRemote } from './remote.js';
 import { createHouseholds } from './household.js';
+import { createCloud } from './cloud.js';
 import { createSync } from './sync.js';
 import { seasonNote, peakThisMonth, MONTHS } from './seasons.js';
 import {
@@ -118,6 +121,15 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   // were never shown.
   let hhFresh = null;            // {id, seat, code}
   let hhCopied = null;           // the code last put on the clipboard
+  let cloud = null;              // the shared-week client, created with the account
+  // The one question this app refuses to answer on anybody's behalf: an account
+  // signing in on a phone that already has a week, into a household that also
+  // has one. Held here until it is answered, and neither week is touched first.
+  let cloudAsk = null;           // {id, rev, doc}
+  let cloudAsked = false;        // asked the row once for this household, right or wrong
+  let cloudBusy = false;         // the guard that keeps render() from fetching twice
+  let cloudStop = null;          // the watcher's off switch
+  let cloudWatching = null;      // the household it is watching, so it is not restarted
   let updateReady = false;       // a newer build is sitting in the service worker's cache
 
   /**
@@ -155,8 +167,8 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   if (!store.state.plan) regenerate();
 
   // ------------------------------------------------------------- state edits
-  function commit(fn) {
-    store.update((s) => fn({ ...s }));
+  function commit(fn, opts) {
+    store.update((s) => fn({ ...s }), opts);
     render();
   }
 
@@ -185,6 +197,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     // and get, and a render triggered by that arriving must find the flag
     // already set or the two would call each other for ever.
     householdFollowsAccount();
+    cloudFollowsAccount();
     const s = store.state;
     const tab = s.ui.tab ?? 'week';
     root.innerHTML = `
@@ -215,9 +228,12 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       <dialog id="swap"></dialog>
       <dialog id="ate"></dialog>`;
     wire();
-    // Every state change lands here, so this one line covers every path that
-    // could need writing to the shared file. The syncer debounces the rest.
+    // Every state change lands here, so these two lines cover every path that
+    // could need writing to the shared file or the shared row. Both debounce,
+    // and the cloud one also checks that something actually changed -- a render
+    // is not an edit, and a revision is not free.
     sync?.schedule();
+    cloudTick();
   }
 
   function banner() {
@@ -238,6 +254,10 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       out.push(`<div class="notice"><span>${esc(s[key])}</span>
         <button class="btn ghost small no-print" data-dismiss="${key}" style="margin-left:.6rem">Got it</button></div>`);
     }
+    // Above everything, including the update: it is the only notice in this app
+    // that is a question, and the only one where guessing costs a week of
+    // somebody's planning.
+    if (cloudAsk) out.push(cloudQuestion());
     // Above the plan warnings: this one is about the app itself, and it is the
     // only notice here that stops being true if it is ignored long enough.
     if (updateReady) {
@@ -927,6 +947,8 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
 
       ${viewHouseholdPanel()}
 
+      ${viewCloudPanel()}
+
       <div class="card pad stack" style="margin-top:.9rem">
         <h2 style="font-size:1rem">Never again (${banned.length})</h2>
         ${banned.length === 0 ? '<p class="muted small">Nothing banned yet. The 👎 button on any meal puts it here for good.</p>' : `
@@ -937,7 +959,9 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
 
       <div class="card pad stack" style="margin-top:.9rem">
         <h2 style="font-size:1rem">Your data</h2>
-        <p class="small muted">Everything lives in this browser only — nothing is uploaded anywhere. Export before you switch browser or clear site data, or it is gone.</p>
+        <p class="small muted">${(hhList ?? []).length
+    ? 'The week, your recipes, bans and weight log are shared with your household, and a copy stays in this browser. Nothing else leaves this phone.'
+    : 'Everything lives in this browser only — nothing is uploaded anywhere.'} Export before you switch browser or clear site data, or it is gone.</p>
         <div class="btn-row">
           <button class="btn" data-act="export">⬇ Export JSON</button>
           <button class="btn" data-act="import">⬆ Import JSON</button>
@@ -987,6 +1011,71 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
         ` : `
           <p class="small muted">Only Chrome and Edge can link a file from a web page. Everywhere else, <b>Export JSON</b> below and <b>Import JSON</b> on the other device does the same job by hand.</p>
         `}
+      </div>`;
+  }
+
+  /**
+   * Two weeks met. Which one survives?
+   *
+   * Asked, rather than resolved: a merge would be the clever answer and the
+   * wrong one. The two weeks have no history in common -- this phone has never
+   * seen that row and that row has never seen this phone -- so a union would
+   * produce a week neither person planned, out of two they did.
+   */
+  function cloudQuestion() {
+    const when = Number(cloudAsk.doc?.savedAt ?? 0);
+    const days = when ? Math.floor((Date.now() - when) / 86400000) : null;
+    const age = days === null ? '' : days <= 0 ? ' (changed today)' : days === 1 ? ' (changed yesterday)' : ` (changed ${days} days ago)`;
+    return `<div class="notice no-print stack">
+      <div><b>This phone has a week, and so does the household${esc(age)}.</b> Only one of them can be the shared week from here on — the other is replaced.</div>
+      <div class="btn-row">
+        <button class="btn primary" data-act="cloud-keep">Keep this phone's week</button>
+        <button class="btn" data-act="cloud-take">Take the household's week</button>
+      </div>
+      <p class="tiny faint">Nothing has been written yet, in either direction. Export in Settings first if you would rather keep both.</p>
+    </div>`;
+  }
+
+  /**
+   * Whether the week is safe, in one line.
+   *
+   * The whole point of this card is that it is boring. A shared week that works
+   * is invisible, and the only way to tell invisible-and-working from
+   * invisible-and-stuck is to say which it is.
+   */
+  function viewCloudPanel() {
+    if (!remote?.signedIn?.()) return '';
+    const s = store.state;
+    const st = cloud?.status() ?? { state: 'idle' };
+    const id = s.cloud?.householdId;
+    const house = (hhList ?? []).find((h) => h.id === id);
+
+    let tone = '';
+    let text;
+    let retry = false;
+    if (!(hhList ?? []).length) {
+      text = 'The week is on this phone only. Start a household above and it travels with the account.';
+    } else if (cloudAsk) {
+      text = 'Two weeks are waiting on an answer — see the question at the top of the page.';
+    } else if (!id) {
+      text = cloudBusy ? 'Looking…' : 'The shared week has not started yet.';
+    } else if (st.state === 'offline' || st.state === 'error' || st.state === 'conflict') {
+      tone = 'bad';
+      text = st.error ?? 'The last change did not reach the household.';
+      retry = true;
+    } else if (st.waiting || st.state === 'saving' || st.state === 'pending') {
+      text = 'Saving to the household…';
+    } else {
+      tone = 'good';
+      text = `Saved to ${esc(house?.name ?? 'the household')} — revision ${Number(s.cloud.rev ?? 0)}.`;
+    }
+
+    return `
+      <div class="card pad stack" style="margin-top:.9rem" data-panel="cloud">
+        <h2 style="font-size:1rem">The shared week</h2>
+        <div class="notice ${tone}">${text}</div>
+        ${retry ? '<div class="btn-row"><button class="btn primary" data-act="cloud-retry">↻ Try again now</button></div>' : ''}
+        <p class="tiny faint">Everyone in the household plans the same week: a swap on one phone shows up on the other within half a minute, and both phones work offline in the meantime. Bans, favourites, notes, your own recipes and the cupboard merge from both sides — the week itself is whoever changed it last, meal by meal.</p>
       </div>`;
   }
 
@@ -1138,6 +1227,141 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       return;
     }
     if (!hhAsked && !hhBusy) Promise.resolve(loadHouseholds()).catch(() => {});
+  }
+
+  // ------------------------------------------------------------ shared week
+  //
+  // One row per household, guarded by a revision; src/cloud.js is the transport
+  // and store.js owns the document. What lives here is the three decisions that
+  // need a person or a screen:
+  //
+  //   - which household's row this phone's week belongs in;
+  //   - what happens the first time two weeks meet;
+  //   - whether the person can see that the week is safe.
+
+  /**
+   * The household whose row holds the week.
+   *
+   * The bookmarked one while the account is still in it, so a phone does not
+   * change rows under somebody who joined a second household; the first one
+   * otherwise. Nobody here is in two households yet, and a picker for a case
+   * that does not exist is a picker that is wrong by the time it does.
+   */
+  function cloudHousehold() {
+    const list = hhList ?? [];
+    if (!list.length) return null;
+    const was = store.state.cloud?.householdId;
+    return list.some((h) => h.id === was) ? was : list[0].id;
+  }
+
+  /** Write down where this device now stands, without claiming an edit. */
+  function cloudMark(id, rev, at) {
+    const s = store.state;
+    store.save({ ...s, cloud: { householdId: id, rev, at } }, { touch: false });
+  }
+
+  /**
+   * The push, as a job cloud.js can retry without knowing what it is pushing.
+   *
+   * `read` returning null is what keeps a render from costing a revision: every
+   * keystroke re-renders, and only a save moves `savedAt`.
+   */
+  function cloudJob(id) {
+    return {
+      read() {
+        const s = store.state;
+        if (s.cloud?.householdId !== id) return null;
+        if (s.cloud.at != null && s.cloud.at === Number(s.savedAt ?? 0)) return null;
+        return { doc: cloudDoc(s), rev: Number(s.cloud.rev ?? 0) };
+      },
+      // A lost race is resolved here and kept here. Pushing a merge this device
+      // did not adopt would mean pushing the un-merged week again on the next
+      // keystroke, and her changes would bounce straight back out of the row.
+      merge(mineDoc, theirsDoc) {
+        store.save(mergeStates(store.state, theirsDoc), { touch: false });
+        return cloudDoc(store.state);
+      },
+      write(doc, rev) {
+        cloudMark(id, rev, Number(doc.savedAt ?? store.state.savedAt ?? 0));
+        render();
+      },
+    };
+  }
+
+  /** Called at the end of every render, like the file syncer. */
+  function cloudTick() {
+    const id = store.state.cloud?.householdId;
+    if (!cloud || !id || !remote?.signedIn?.()) return;
+    if (!cloudJob(id).read()) return;
+    cloud.schedule(id, cloudJob(id));
+  }
+
+  /**
+   * A week written by the other phone.
+   *
+   * Merged rather than taken: she may have banned something while this phone
+   * added a recipe, and both are meant to survive. The bookmark is cleared
+   * unless the row already holds the merged result -- that one comparison is
+   * what stops two phones pushing each other's merges back and forth for ever.
+   */
+  function cloudArrived(id, got) {
+    store.save(mergeStates(store.state, got.doc ?? {}), { touch: false });
+    const settled = sameDoc(cloudDoc(store.state), got.doc ?? {});
+    cloudMark(id, got.rev, settled ? Number(store.state.savedAt ?? 0) : null);
+    render();
+  }
+
+  /** One watcher per household, started once. */
+  function cloudWatch(id) {
+    if (cloudWatching === id) return;
+    cloudStop?.();
+    cloudWatching = id;
+    cloudStop = cloud.watch(id, (got) => cloudArrived(id, got), {
+      // Asked each time, never captured: this phone's revision moves with every
+      // push, and a watcher holding the one it started with would report this
+      // phone's own writes back to it as news, for ever.
+      rev: () => Number(store.state.cloud?.rev ?? 0),
+    });
+  }
+
+  function cloudForget() {
+    cloudStop?.();
+    cloudStop = null; cloudWatching = null;
+    cloudAsk = null; cloudAsked = false;
+  }
+
+  /**
+   * Ask the row about itself, once, when the household first becomes known.
+   *
+   * An empty row is adopted without a word: there is no second week, so there
+   * is nothing to choose between. A row with a week in it is a question, and it
+   * is asked before anything is written -- including before the bookmark is
+   * set, because the bookmark is what licenses the next push.
+   */
+  function cloudFollowsAccount() {
+    if (!cloud || !remote?.signedIn?.()) {
+      if (cloudWatching || cloudAsk || cloudAsked) cloudForget();
+      return;
+    }
+    const id = cloudHousehold();
+    if (!id) return;
+    if (store.state.cloud?.householdId === id) { cloudWatch(id); return; }
+    if (cloudAsked || cloudBusy) return;
+
+    cloudAsked = true;
+    cloudBusy = true;
+    cloud.pull(id).then((got) => {
+      cloudBusy = false;
+      if (!got.ok) { render(); return; }
+      const theirs = got.missing ? null : got.doc;
+      if (!theirs || !Object.keys(theirs).length) {
+        // Nothing there to lose, so this phone's week becomes the household's.
+        cloudMark(id, got.rev, null);
+      } else {
+        cloudAsk = { id, rev: got.rev, doc: theirs };
+      }
+      render();
+    }).catch(() => { cloudBusy = false; render(); });
   }
 
   /**
@@ -1386,7 +1610,13 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   }
 
   function wire() {
-    root.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => commit((s) => ({ ...s, ui: { ...s.ui, tab: b.dataset.tab } })));
+    // `touch: false`: which tab you are looking at is not an edit. It is not
+    // shared data either -- the merge drops it -- so stamping savedAt here
+    // would spend a revision of the household's week on a tap, and outrank
+    // the phone that was actually being used.
+    root.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => commit(
+      (s) => ({ ...s, ui: { ...s.ui, tab: b.dataset.tab } }), { touch: false },
+    ));
 
     root.querySelectorAll('[data-detail]').forEach((b) => b.onclick = () => {
       const id = b.dataset.detail;
@@ -1807,6 +2037,34 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     act('account-cancel', () => { accountCode = ''; remote?.cancelSignIn(); });
     act('account-signout', () => { accountCode = ''; Promise.resolve(remote?.signOut()).catch(() => {}); });
 
+    // The shared week. Both answers to the question write a bookmark and nothing
+    // else: the push that follows is the ordinary one at the end of render().
+    act('cloud-keep', () => {
+      const ask = cloudAsk;
+      if (!ask) return;
+      cloudAsk = null;
+      // `at: null` is "the row does not hold this phone's week yet", which is
+      // exactly what makes the next render push it.
+      cloudMark(ask.id, ask.rev, null);
+      render();
+    });
+    act('cloud-take', () => {
+      const ask = cloudAsk;
+      if (!ask) return;
+      cloudAsk = null;
+      const s = store.state;
+      // Through migrate(), because this document was written by a version of the
+      // app that may not be this one, and `sync` is kept because a file link is
+      // this phone's business and has nothing to do with whose week won.
+      const taken = migrate({ ...ask.doc, sync: s.sync, cloud: s.cloud });
+      store.save(
+        { ...taken, cloud: { householdId: ask.id, rev: ask.rev, at: Number(taken.savedAt ?? 0) } },
+        { touch: false },
+      );
+      render();
+    });
+    act('cloud-retry', () => { Promise.resolve(cloud?.flush?.()).then(render).catch(() => {}); });
+
     // The household. Everything that changes something goes through household(),
     // which is the single place a refusal is turned into a sentence on screen
     // rather than a button that looked like it worked.
@@ -2109,7 +2367,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   // pushed an ever-staler week over the top of hers. Now it reads back too.
   sync.watch();
   // A debounced write could still be in flight when the tab goes away.
-  win?.addEventListener?.('pagehide', () => { sync?.flush?.(); });
+  win?.addEventListener?.('pagehide', () => { sync?.flush?.(); cloud?.flush?.(); });
 
   // The account, built for the same reason as the syncer: it renders on every
   // change. completeFromUrl() is the one thing that has to happen on boot -- a
@@ -2122,6 +2380,15 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   // it holds no state, so it is built here rather than lazily, and it shares the
   // window's fetch so a test that fakes one fakes both.
   houses = createHouseholds({ remote, fetch: win?.fetch ? win.fetch.bind(win) : globalThis.fetch });
+  // And the shared week on top of both: it needs the account for a token and
+  // the household list for a row to write to, and it is harmless until it has
+  // them -- cloudTick() returns on the first line without a bookmark.
+  cloud = createCloud({
+    remote,
+    fetch: win?.fetch ? win.fetch.bind(win) : globalThis.fetch,
+    setTimer: (fn, ms) => win?.setTimeout?.(fn, ms),
+    clearTimer: (id) => win?.clearTimeout?.(id),
+  });
   Promise.resolve(remote.completeFromUrl()).catch(() => {});
 
   render();

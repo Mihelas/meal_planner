@@ -109,6 +109,10 @@ export function emptyState() {
     weights: [],         // [{ date: 'YYYY-MM-DD', person1: 100, person2: 65 }]
     ui: { tab: 'week' },
     sync: { name: null, at: null, writes: 0, device: null },
+    // This device's bookmark in the shared household row: which household
+    // the row belongs to, the revision last seen to land, and the `savedAt`
+    // known to be in it. Local, like `sync` -- see cloudDoc().
+    cloud: { householdId: null, rev: 0, at: null },
   };
 }
 
@@ -177,6 +181,17 @@ export function migrate(raw) {
   if (!state.bought || typeof state.bought !== 'object') state.bought = {};
   if (!state.itemShop || typeof state.itemShop !== 'object') state.itemShop = {};
   if (!state.sync || typeof state.sync !== 'object') state.sync = { ...base.sync };
+  // Rebuilt field by field rather than spread: a rev that arrived as a string
+  // would still filter correctly on the way out and then compare wrongly on the
+  // way back, which is a week that silently stops arriving.
+  {
+    const c = state.cloud && typeof state.cloud === 'object' ? state.cloud : {};
+    state.cloud = {
+      householdId: typeof c.householdId === 'string' && c.householdId ? c.householdId : null,
+      rev: Number.isFinite(Number(c.rev)) ? Number(c.rev) : 0,
+      at: c.at == null || !Number.isFinite(Number(c.at)) ? null : Number(c.at),
+    };
+  }
 
   // --- v3 settings
   if (!COOKING_STYLES.includes(state.settings.cookingStyle)) state.settings.cookingStyle = 'daily';
@@ -423,6 +438,46 @@ export function snapshot(state, device = null) {
   };
 }
 
+/**
+ * What travels to the household row.
+ *
+ * The inverse of the two lines in mergeStates: `sync` is this device's file
+ * handle, its name and its write count, and `cloud` is its bookmark in the row
+ * being written. Neither means anything on the other phone, and `cloud`
+ * actively harms it -- a document carrying somebody else's revision would
+ * overwrite the number the next push depends on.
+ *
+ * `savedAt` is kept, deliberately: it is the merge's tie-breaker, and a
+ * document that arrived without one would lose every race it entered.
+ */
+export function cloudDoc(state) {
+  const { cloud, sync, ...rest } = state ?? {};
+  return { ...rest, savedAt: Number(state?.savedAt ?? 0) };
+}
+
+/**
+ * Whether two documents say the same thing, regardless of key order.
+ *
+ * Needed for exactly one decision, and it is an important one: after folding in
+ * a week from the other phone, does the row already hold the result? If it
+ * does, pushing it back would be a revision spent on nothing -- and the other
+ * phone, seeing a new revision, would fold it in and push *its* result back,
+ * and the two would trade merges every thirty seconds for ever.
+ *
+ * Key order rather than deep-equality is the fiddly part: one side of the
+ * comparison has been through JSON and back and the other has not.
+ */
+export function sameDoc(a, b) {
+  const canon = (v) => {
+    if (Array.isArray(v)) return v.map(canon);
+    if (v && typeof v === 'object') {
+      return Object.keys(v).sort().reduce((o, k) => { o[k] = canon(v[k]); return o; }, {});
+    }
+    return v;
+  };
+  return JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+}
+
 // ------------------------------------------------------------------- merge
 //
 // Two devices, one file in a shared folder, no server. A blind last-write-wins
@@ -624,6 +679,11 @@ export function mergeStates(mine, theirs) {
     // The tab you are looking at is not shared data.
     ui: mine.ui,
     sync: { ...(mine.sync ?? {}), at: Date.now() },
+    // Nor is the bookmark. The spread above copies the remote side wholesale
+    // when the remote side is newer, so without this line her phone's revision
+    // would replace the one this device's next push is conditioned on -- and
+    // every push after that would be refused, silently, for ever.
+    cloud: mine.cloud,
   });
 }
 

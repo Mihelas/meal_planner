@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createStore, emptyState, migrate, addWeight, weightTrend, STORAGE_KEY, SCHEMA_VERSION,
+  createStore, emptyState, migrate, cloudDoc, sameDoc, addWeight, weightTrend, STORAGE_KEY, SCHEMA_VERSION,
 } from '../src/store.js';
 import {
   generateWeek, defaultSettings, PLAN_VERSION, pantryKey, legacyPantryKey,
@@ -262,4 +262,58 @@ test('a key from the user’s own recipe is moved too', () => {
   });
   assert.equal(out.memory.pantry[pantryKey(ing)], true);
   assert.equal(out.memory.pantry[was], undefined);
+});
+
+// ------------------------------------------------------- the household row
+//
+// `cloud` is the bookmark for the shared row: which household it belongs to,
+// which revision this device last saw land, and which `savedAt` is known to be
+// in it. All three are about *this device's* relationship to the row, which is
+// why none of them may travel inside the document -- see merge.test.mjs for the
+// half of that rule the merge enforces.
+
+test('a plan from before the cloud existed comes back with a cloud bookmark', () => {
+  const out = migrate({ schema: 3, plan: null });
+  assert.deepEqual(out.cloud, { householdId: null, rev: 0, at: null });
+});
+
+test('a cloud bookmark that is not an object is replaced rather than half-trusted', () => {
+  assert.deepEqual(migrate({ cloud: 'yes' }).cloud, { householdId: null, rev: 0, at: null });
+  assert.deepEqual(migrate({ cloud: null }).cloud, { householdId: null, rev: 0, at: null });
+});
+
+test('a cloud bookmark that is there is left exactly as it was', () => {
+  const was = { householdId: 'h1', rev: 12, at: 1700000000000 };
+  assert.deepEqual(migrate({ cloud: was }).cloud, was);
+});
+
+test('a revision that is not a number cannot be trusted to guard the next push', () => {
+  // A rev of "12" would be sent as rev=eq.12 and work, right up until the
+  // comparison that decides whether the other phone has news.
+  assert.equal(migrate({ cloud: { householdId: 'h1', rev: '12' } }).cloud.rev, 12);
+  assert.equal(migrate({ cloud: { householdId: 'h1', rev: null } }).cloud.rev, 0);
+});
+
+test('what travels to the household leaves this device behind', () => {
+  const s = migrate({
+    savedAt: 99,
+    cloud: { householdId: 'h1', rev: 12, at: 99 },
+    sync: { name: 'plan.json', at: 5, writes: 3, device: 'dev-a' },
+  });
+  const doc = cloudDoc(s);
+
+  assert.equal(doc.cloud, undefined, 'the rev travelled, and the next push is now guarding the wrong number');
+  assert.equal(doc.sync, undefined, 'this device\'s file handle travelled to the other phone');
+  assert.equal(doc.savedAt, 99, 'savedAt is the merge tie-breaker and has to travel');
+  assert.deepEqual(doc.plan, s.plan);
+  assert.deepEqual(doc.memory, s.memory);
+});
+
+test('two documents that say the same thing in a different order are the same document', () => {
+  const a = { plan: { days: [1, 2] }, memory: { banned: ['x'], notes: {} }, savedAt: 7 };
+  const b = { savedAt: 7, memory: { notes: {}, banned: ['x'] }, plan: { days: [1, 2] } };
+  assert.equal(sameDoc(a, b), true, 'a round trip through JSON would now cost a revision every poll');
+  assert.equal(sameDoc(a, { ...b, savedAt: 8 }), false);
+  assert.equal(sameDoc(a, { ...b, memory: { banned: ['x', 'y'], notes: {} } }), false,
+    'an order-insensitive compare that ignores arrays would lose a ban');
 });

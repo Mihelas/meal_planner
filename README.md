@@ -59,7 +59,9 @@ Needs Chrome or Edge. Everywhere else, Export/Import does the same job by hand. 
 shared file that cannot be read or parsed is **never written over**.
 
 **Export your data** (Settings) before switching browser or clearing site data.
-Nothing is uploaded anywhere — the sync file is a file on your own disk.
+Without an account nothing is uploaded anywhere — the sync file is a file on your own
+disk. With one, the week travels through your household's row in Supabase (see
+`supabase/README.md`), and the browser copy is still the one the app reads.
 
 ## Where it lives
 

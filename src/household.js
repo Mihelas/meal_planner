@@ -26,49 +26,13 @@
 //   - **Tell offline apart from refused**, by the same rule as remote.js: a
 //     network problem reported as a refusal teaches people to re-type things
 //     that were never wrong.
+//
+// How a request is made, and how a refusal becomes a sentence, both live in
+// rest.js -- cloud.js asks the same database the same way, and that is worth
+// exactly one definition.
 
 import { SUPABASE_URL, SUPABASE_KEY } from './remote.js';
-
-const OFFLINE = 'You appear to be offline. The plan still works; try again when you have a connection.';
-const SIGNED_OUT = 'Sign in first — a household lives in the account, not on this phone.';
-
-/**
- * The messages Postgres writes for a log, and what a person should see instead.
- *
- * Deliberately short. Anything not matched here came from a `raise exception` in
- * 0003 or 0004, which are already written in English and already know which of
- * the four 42501s they are.
- */
-const RAW = [
-  [/could not find the function|schema cache/i,
-    'The database is missing a function this needs — a migration in supabase/migrations/ has not been run yet.'],
-  [/jwt expired|invalid jwt|jwserror|invalid claim/i,
-    'Your sign-in has expired. Sign in again to pick the plan back up.'],
-  [/violates row-level security policy/i,
-    'That is not yours to change.'],
-  [/duplicate key value violates unique constraint/i,
-    'Somebody is already in that seat.'],
-  [/violates foreign key constraint/i,
-    'That household is already gone.'],
-];
-
-/**
- * A PostgREST error body as a sentence.
- *
- * Exported because it is the interesting half of this module and deserves its
- * own tests: everything else is a URL.
- */
-export function humanise(payload, status = 400) {
-  const said = typeof payload?.message === 'string' ? payload.message.trim() : '';
-  for (const [pattern, text] of RAW) {
-    if (pattern.test(said) || pattern.test(String(payload?.code ?? ''))) return text;
-  }
-  if (payload?.code === 'PGRST202') return RAW[0][1];
-  if (status === 401 || status === 403) {
-    return said || 'That is not yours to change.';
-  }
-  return said || `The database would not answer (${status}).`;
-}
+import { createRest, OFFLINE, SIGNED_OUT } from './rest.js';
 
 export function createHouseholds({
   remote,
@@ -76,40 +40,7 @@ export function createHouseholds({
   url = SUPABASE_URL,
   key = SUPABASE_KEY,
 } = {}) {
-  /**
-   * One request, with the token attached or none at all.
-   *
-   * Returns `{ ok, payload }` or `{ ok: false, error }` -- never throws, because
-   * every caller here is wired to a button and a thrown error on a phone is a
-   * blank panel.
-   */
-  async function rest(path, { method = 'GET', body, prefer } = {}) {
-    const token = await remote.accessToken();
-    if (!token) return { ok: false, error: SIGNED_OUT };
-
-    const headers = {
-      apikey: key,
-      'content-type': 'application/json',
-      authorization: `Bearer ${token}`,
-    };
-    if (prefer) headers.prefer = prefer;
-
-    let res;
-    try {
-      res = await doFetch(`${url}${path}`, {
-        method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-      });
-    } catch {
-      return { ok: false, error: OFFLINE };
-    }
-
-    let payload = null;
-    try { payload = await res.json(); } catch { /* 204, or HTML from a proxy */ }
-    if (res.status >= 400) return { ok: false, error: humanise(payload, res.status) };
-    return { ok: true, payload };
-  }
-
-  const rpc = (fn, args) => rest(`/rest/v1/rpc/${fn}`, { method: 'POST', body: args });
+  const { rest, rpc } = createRest({ remote, fetch: doFetch, url, key });
 
   const clean = (s) => String(s ?? '').trim();
   const q = encodeURIComponent;

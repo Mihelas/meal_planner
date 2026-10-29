@@ -520,3 +520,18 @@ test('a week saved before plan ids existed gets one, so the week in progress sti
   const other = migrate({ ...emptyState(), schema: 3, settings: S, plan: JSON.parse(JSON.stringify(idless)) });
   assert.equal(other.plan.id, old.plan.id);
 });
+
+test('the household row cannot hand this device a revision that is not its own', () => {
+  // The hazard this closes: mergeStates copies the remote side wholesale when
+  // the remote side is newer, so a `cloud` block inside the incoming document
+  // would replace the revision the next push is conditioned on -- with her
+  // phone's. The push after that would be refused for ever, silently, and the
+  // only symptom would be a week that stopped arriving.
+  const mine = migrate({ savedAt: 10, cloud: { householdId: 'h1', rev: 4, at: 10 } });
+  const theirs = migrate({ savedAt: 99, cloud: { householdId: 'h1', rev: 41, at: 99 } });
+
+  const out = mergeStates(mine, theirs);
+
+  assert.equal(out.savedAt, 99, 'the newer week should still have won');
+  assert.deepEqual(out.cloud, { householdId: 'h1', rev: 4, at: 10 });
+});

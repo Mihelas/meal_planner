@@ -24,7 +24,7 @@ const OUT = path.join(root, 'dist', 'meal-planner.html');
 const PWA = path.join(root, 'dist', 'pwa');
 
 // Dependency order: a module may only import from ones earlier in this list.
-const MODULES = ['targets.js', 'recipes.js', 'seasons.js', 'planner.js', 'swap.js', 'shopping.js', 'store.js', 'remote.js', 'household.js', 'sync.js', 'install.js', 'ui.js', 'app.js'];
+const MODULES = ['targets.js', 'recipes.js', 'seasons.js', 'planner.js', 'swap.js', 'shopping.js', 'store.js', 'remote.js', 'rest.js', 'household.js', 'cloud.js', 'sync.js', 'install.js', 'ui.js', 'app.js'];
 
 const RE_IMPORT = /^import\s*\{([\s\S]*?)\}\s*from\s*'\.\/([\w.-]+)'\s*;?\s*$/gm;
 const RE_ANY_IMPORT = /^\s*import\s/m;
