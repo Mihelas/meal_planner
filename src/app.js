@@ -1759,27 +1759,58 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     return { day: Number(d), slot, person: person === '*' || !person ? null : person, shared: person === '*' };
   }
 
+  // One walk, not ninety-three. Every handler below used to find its elements
+  // with its own full-tree `querySelectorAll('[data-x]')`, and `act()` did one
+  // more per action name -- 93 scans of ~2500 elements on every render, each
+  // re-asking the selector engine a question the previous scan had already
+  // walked past. A browser hides that behind a native matcher; jsdom mid-test
+  // and a phone mid-render both pay for it in full. Reading each element's
+  // attributes once and bucketing them costs one traversal and no matching.
+  function collectControls(el) {
+    const byAttr = new Map();
+    const push = (key, node) => {
+      const at = byAttr.get(key);
+      if (at) at.push(node); else byAttr.set(key, [node]);
+    };
+    for (const node of el.getElementsByTagName('*')) {
+      const attrs = node.attributes;
+      for (let i = 0; i < attrs.length; i += 1) {
+        const { name, value } = attrs[i];
+        if (!name.startsWith('data-')) continue;
+        // `data-act` buckets by value: one list per action name, which is what
+        // act() asks for, rather than one list of every action button.
+        push(name === 'data-act' ? `data-act=${value}` : name, node);
+      }
+    }
+    return byAttr;
+  }
+
   function wire() {
+    const controls = collectControls(root);
+    // Same answer the per-attribute scan gave: descendants of root, in document
+    // order, and an empty list for an attribute nothing drew.
+    const all = (name) => controls.get(`data-${name}`) ?? [];
+
     // `touch: false`: which tab you are looking at is not an edit. It is not
     // shared data either -- the merge drops it -- so stamping savedAt here
     // would spend a revision of the household's week on a tap, and outrank
     // the phone that was actually being used.
-    root.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => commit(
+    all('tab').forEach((b) => b.onclick = () => commit(
       (s) => ({ ...s, ui: { ...s.ui, tab: b.dataset.tab } }), { touch: false },
     ));
 
-    root.querySelectorAll('[data-detail]').forEach((b) => b.onclick = () => {
+    all('detail').forEach((b) => b.onclick = () => {
       const id = b.dataset.detail;
       if (open.has(id)) open.delete(id); else open.add(id);
       render();
     });
 
-    root.querySelectorAll('[data-swap]').forEach((b) => b.onclick = () => openSwap(parseId(b.dataset.swap)));
-    root.querySelectorAll('[data-ate]').forEach((b) => b.onclick = () => openAte(parseId(b.dataset.ate)));
+    all('swap').forEach((b) => b.onclick = () => openSwap(parseId(b.dataset.swap)));
+    all('ate').forEach((b) => b.onclick = () => openAte(parseId(b.dataset.ate)));
 
     // Un-log: rebuild that one slot from the planner and drop the lock the log
     // put on it, so the slot goes back to being a normal, re-rollable meal.
-    root.querySelectorAll('[data-unlog]').forEach((b) => b.onclick = () => {
+    all('unlog').forEach((b) => b.onclick = () => {
       const t = parseId(b.dataset.unlog);
       const s = store.state;
       undoable('The planned meal is back.', () => {
@@ -1791,7 +1822,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       });
     });
 
-    root.querySelectorAll('[data-ban]').forEach((b) => b.onclick = () => {
+    all('ban').forEach((b) => b.onclick = () => {
       const t = parseId(b.dataset.ban);
       const s = store.state;
       const v = s.plan.days[t.day][t.slot];
@@ -1803,23 +1834,23 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       });
     });
 
-    root.querySelectorAll('[data-lock]').forEach((b) => b.onclick = () => {
+    all('lock').forEach((b) => b.onclick = () => {
       const t = parseId(b.dataset.lock);
       commit((s) => ({ ...s, plan: toggleLock(s.plan, { day: t.day, slot: t.slot, person: t.person ?? undefined }) }));
     });
 
-    root.querySelectorAll('[data-rate]').forEach((b) => b.onclick = () => {
+    all('rate').forEach((b) => b.onclick = () => {
       const [id, stars] = b.dataset.rate.split('|');
       commit((s) => ({ ...s, memory: rateRecipe(s.memory, id, Number(stars)) }));
     });
 
     // change, not input: a note is finished when you leave the field, and
     // re-rendering on every keystroke would move the cursor out from under you.
-    root.querySelectorAll('[data-note]').forEach((el) => el.onchange = () => {
+    all('note').forEach((el) => el.onchange = () => {
       commit((s) => ({ ...s, memory: noteRecipe(s.memory, el.dataset.note, el.value) }));
     });
 
-    root.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => {
+    all('mode').forEach((b) => b.onclick = () => {
       const day = Number(b.dataset.day);
       const mode = b.dataset.mode;
       const s = store.state;
@@ -1835,11 +1866,11 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     // `data-dismiss`, not `data-note`: the note textarea on a recipe card uses
     // `data-note` too, and binding a click handler to both meant clicking into
     // the field ran this, re-rendered, and replaced the field mid-click.
-    root.querySelectorAll('[data-dismiss]').forEach((b) => b.onclick = () => {
+    all('dismiss').forEach((b) => b.onclick = () => {
       commit((s) => ({ ...s, [b.dataset.dismiss]: null }));
     });
 
-    root.querySelectorAll('[data-bought]').forEach((cb) => cb.onchange = () => {
+    all('bought').forEach((cb) => cb.onchange = () => {
       const id = cb.dataset.bought;
       // The tick itself lives in `bought`, but un-ticking needs a note in memory as
       // well: the merge unions the ticks, so without one the other device's copy of
@@ -1853,19 +1884,19 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
 
     // "I have this already": stored with the quantity the week needs, because
     // "some rice" and "1 kg of rice" shop differently.
-    root.querySelectorAll('[data-have]').forEach((b) => b.onclick = () => {
+    all('have').forEach((b) => b.onclick = () => {
       const [id, amount] = b.dataset.have.split('|');
       commit((s) => ({ ...s, memory: setPantry(s.memory, id, Number(amount)) }));
     });
-    root.querySelectorAll('[data-pantry-del]').forEach((b) => b.onclick = () => {
+    all('pantry-del').forEach((b) => b.onclick = () => {
       commit((s) => ({ ...s, memory: setPantry(s.memory, b.dataset.pantryDel, 0) }));
     });
-    root.querySelectorAll('[data-item-shop]').forEach((sel) => sel.onchange = () => {
+    all('item-shop').forEach((sel) => sel.onchange = () => {
       const id = sel.dataset.itemShop;
       commit((s) => ({ ...s, itemShop: { ...s.itemShop, [id]: sel.value } }));
     });
 
-    root.querySelectorAll('[data-person]').forEach((inp) => inp.onchange = () => {
+    all('person').forEach((inp) => inp.onchange = () => {
       const i = Number(inp.dataset.person);
       const key = inp.dataset.key;
       const raw = inp.value;
@@ -1879,14 +1910,14 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       render();
     });
 
-    root.querySelectorAll('[data-maintain]').forEach((b) => b.onclick = () => {
+    all('maintain').forEach((b) => b.onclick = () => {
       const i = Number(b.dataset.maintain);
       const s = store.state;
       const people = s.settings.people.map((p, pi) => (pi === i ? { ...p, goal: 'maintain' } : p));
       applySettings({ ...s.settings, people });
     });
 
-    root.querySelectorAll('[data-cookday]').forEach((b) => b.onclick = () => {
+    all('cookday').forEach((b) => b.onclick = () => {
       const s = store.state;
       const i = Number(b.dataset.cookday);
       const days = new Set(cookSessions(s.settings));
@@ -1896,7 +1927,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       applySettings({ ...s.settings, cookDays: [...days].sort((a, b) => a - b) });
     });
 
-    root.querySelectorAll('[data-shop]').forEach((inp) => inp.onchange = () => {
+    all('shop').forEach((inp) => inp.onchange = () => {
       const i = Number(inp.dataset.shop);
       const name = inp.value.trim();
       if (!name) { render(); return; }
@@ -1905,7 +1936,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
         settings: { ...s.settings, shops: s.settings.shops.map((sh, si) => (si === i ? { ...sh, name } : sh)) },
       }));
     });
-    root.querySelectorAll('[data-shop-aisle]').forEach((b) => b.onclick = () => {
+    all('shop-aisle').forEach((b) => b.onclick = () => {
       const [idx, aisle] = b.dataset.shopAisle.split('|');
       const i = Number(idx);
       const s = store.state;
@@ -1920,7 +1951,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       }));
       commit((s2) => ({ ...s2, settings: { ...s2.settings, shops } }));
     });
-    root.querySelectorAll('[data-del-shop]').forEach((b) => b.onclick = () => {
+    all('del-shop').forEach((b) => b.onclick = () => {
       const i = Number(b.dataset.delShop);
       const s = store.state;
       if (s.settings.shops.length < 2) return;
@@ -1931,36 +1962,36 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       commit((s2) => ({ ...s2, itemShop, settings: { ...s2.settings, shops } }));
     });
 
-    root.querySelectorAll('[data-eatout]').forEach((sel) => sel.onchange = () => {
+    all('eatout').forEach((sel) => sel.onchange = () => {
       const i = Number(sel.dataset.eatout);
       const s = store.state;
       const eatOut = s.settings.eatOut.map((o, oi) => (oi === i
         ? { ...o, [sel.dataset.field]: sel.dataset.field === 'day' ? Number(sel.value) : sel.value } : o));
       applySettings({ ...s.settings, eatOut });
     });
-    root.querySelectorAll('[data-del-eatout]').forEach((b) => b.onclick = () => {
+    all('del-eatout').forEach((b) => b.onclick = () => {
       const s = store.state;
       applySettings({ ...s.settings, eatOut: s.settings.eatOut.filter((_, i) => i !== Number(b.dataset.delEatout)) });
     });
-    root.querySelectorAll('[data-unban]').forEach((b) => b.onclick = () => {
+    all('unban').forEach((b) => b.onclick = () => {
       const s = store.state;
       const memory = unbanRecipe(s.memory, b.dataset.unban);
       store.save({ ...s, memory, plan: generateWeek(s.settings, memory, s.plan) });
       render();
     });
-    root.querySelectorAll('[data-del-weight]').forEach((b) => b.onclick = () => commit((s) => ({
+    all('del-weight').forEach((b) => b.onclick = () => commit((s) => ({
       ...s, weights: s.weights.filter((w) => w.date !== b.dataset.delWeight),
     })));
 
     // The recipe form writes to a draft on every keystroke and does NOT
     // re-render: rebuilding the panel mid-sentence would throw away the other
     // fields and the caret with them.
-    root.querySelectorAll('[data-draft]').forEach((el) => {
+    all('draft').forEach((el) => {
       const set = () => { draft = { ...draft, [el.dataset.draft]: el.value }; };
       el.oninput = set;
       el.onchange = set;
     });
-    const box = root.querySelector('[data-import]');
+    const box = all('import')[0];
     if (box) box.oninput = () => { importText = box.value; };
     const emailBox = root.querySelector('#account-email');
     if (emailBox) emailBox.oninput = () => { accountEmail = emailBox.value; };
@@ -1978,14 +2009,14 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       if (box) box.oninput = () => set(box.value);
     }
 
-    root.querySelectorAll('[data-del-recipe]').forEach((b) => b.onclick = () => {
+    all('del-recipe').forEach((b) => b.onclick = () => {
       const s = store.state;
       undoable('That recipe was removed from the library.', () => {
         store.save({ ...s, memory: removeCustomRecipe(s.memory, b.dataset.delRecipe) });
       });
     });
 
-    const act = (name, fn) => root.querySelectorAll(`[data-act="${name}"]`).forEach((el) => {
+    const act = (name, fn) => (controls.get(`data-act=${name}`) ?? []).forEach((el) => {
       if (el.tagName === 'SELECT' || el.tagName === 'INPUT') el.onchange = () => fn(el);
       else el.onclick = () => fn(el);
     });
@@ -2019,7 +2050,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       win?.location?.reload?.();
     });
 
-    root.querySelectorAll('[data-dismiss-install]').forEach((b) => b.onclick = () => {
+    all('dismiss-install').forEach((b) => b.onclick = () => {
       commit((s) => ({ ...s, ui: { ...s.ui, installHint: 'off' } }));
     });
     act('clear-bought', () => commit((s) => ({
@@ -2029,7 +2060,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     // Which days the shopping list covers. This is the only day row in the app
     // that is allowed to be empty: clearing it is a step on the way to picking
     // two days, not a nonsense state, and an empty list is a coherent answer.
-    root.querySelectorAll('[data-shopday]').forEach((b) => b.onclick = () => {
+    all('shopday').forEach((b) => b.onclick = () => {
       const picked = new Set(shoppingSlice(store.state.settings));
       const i = Number(b.dataset.shopday);
       if (picked.has(i)) picked.delete(i); else picked.add(i);

@@ -6,7 +6,7 @@
   "description": "A single-file weekly meal planner for two, built around a 30-minute weekday cooking cap and leftover lunches.",
   "scripts": {
     "build": "node tools/build.mjs",
-    "test": "node --test",
+    "test": "node tools/build.mjs && node --test --test-timeout=300000",
     "serve": "node tools/serve.mjs"
   },
   "devDependencies": {

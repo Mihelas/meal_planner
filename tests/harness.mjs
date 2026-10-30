@@ -9,16 +9,15 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
+import { ensureBuilt, root } from './built.mjs';
 
-export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export { root };
 
 // Test the current source, not whatever was last built by hand.
-execFileSync(process.execPath, [path.join(root, 'tools', 'build.mjs')], { cwd: root, stdio: 'pipe' });
+ensureBuilt();
 export const HTML = readFileSync(path.join(root, 'dist', 'meal-planner.html'), 'utf8');
 
 export const STORAGE_KEY = 'mealplanner.v1';

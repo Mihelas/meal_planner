@@ -12,13 +12,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { ensureBuilt, root } from './built.mjs';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-execFileSync(process.execPath, [path.join(root, 'tools', 'build.mjs')], { cwd: root, stdio: 'pipe' });
+ensureBuilt();
 const SOURCE = readFileSync(path.join(root, 'dist', 'pwa', 'sw.js'), 'utf8');
 
 const ORIGIN = 'https://meals.example';

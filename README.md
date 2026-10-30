@@ -132,8 +132,8 @@ down in `supabase/dashboard.md`.
 ## Working on it
 
 ```
-npm test      # 721 tests, no browser needed
-npm run build # src/*.js -> dist/meal-planner.html (542 kB, 15 modules inlined)
+npm test      # 772 tests, no browser needed
+npm run build # src/*.js -> dist/meal-planner.html (567 kB, 16 modules inlined)
 npm run serve # http://localhost:4173, for poking at it
 ```
 
@@ -173,8 +173,26 @@ so the thing that gets tested is the thing that gets delivered. `tests/harness.m
 their shared jsdom setup and is deliberately not named `*.test.mjs`, so the runner
 ignores it.
 
-Run the suite with bare `node --test` from the project root — passing it a directory
-finds nothing on this setup.
+Run the suite from the project root — passing `node --test` a directory finds nothing
+on this setup.
+
+`npm test` builds once up front so the thirteen test files that need `dist/` find it
+already fresh — `tests/built.mjs` rebuilds only when something in `src/`, `tools/` or
+`pwa/` is newer than the output, so running one file on its own still tests current
+source.
+
+The five-minute timeout exists so that a hung test *says so*. Without one a hang is
+indistinguishable from a long run, which is how a hang once hid for a morning. It is
+deliberately loose: node applies `--test-timeout` to each **file** as a whole, not to
+each test, and `app-v2.test.mjs` legitimately takes about 85 seconds — 46 jsdom boots
+at roughly a second each. A budget tight enough to catch one hung test would fire on
+that file under load, and a timeout that cries wolf is worse than none, because it
+teaches you to skim past exactly the line that matters.
+
+Which is the other half: node reports a timed-out test as `cancelled`, not `failed`, so
+the summary reads `# fail 0` next to `# cancelled 2` and looks like a pass. The exit
+code is non-zero, so CI is safe — it is a person reading the last line who gets fooled.
+**Read `# cancelled` as `# fail`.**
 
 Nutrition numbers are formula estimates, not measurements, and this is not medical
 advice. Off-plan meals you log are guesses stacked on those estimates. After three
