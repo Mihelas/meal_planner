@@ -582,3 +582,40 @@ test('signing out leaves the plan alone', async () => {
   assert.deepEqual(after.state.bought, { 'x-1': true }, 'the shopping list went with the session');
   assert.ok(after.state.savedAt, 'the week itself should still be there');
 });
+
+// ------------------------------------------------------------- closed signup
+//
+// The app is served from a public URL and always will be: GitHub Pages hands the
+// whole bundle to anyone who asks, and a sign-in screen drawn by that bundle is
+// a picture of a door. The only real lock is on the one thing a stranger can
+// make the server do, which is send a code to an address of their choosing.
+
+test('asking for a code never offers to make an account', async () => {
+  const fetch = fakeFetch([jsonReply(200, {})]);
+  await remote({ fetch }).signIn('stranger@example.com');
+
+  const [call] = fetch.calls;
+  assert.equal(call.body.options?.should_create_user, false,
+    'any address on earth can still sign itself up here');
+});
+
+test('an address with no account is told so, not shown the server\'s wording', async () => {
+  const fetch = fakeFetch([
+    jsonReply(422, { code: 'otp_disabled', error_code: 'otp_disabled', msg: 'Signups not allowed for otp' }),
+  ]);
+  const api = remote({ fetch });
+  const r = await api.signIn('stranger@example.com');
+
+  assert.equal(r.ok, false);
+  assert.match(r.error, /no account for that address/i, `shown instead: ${r.error}`);
+  assert.doesNotMatch(r.error, /otp|signups not allowed/i, 'the database spoke to the person directly');
+  assert.equal(api.pendingEmail(), null,
+    'it waited for a code that was never sent, and will keep asking for one');
+});
+
+test('a refused sign-up is not confused with being rate-limited', async () => {
+  const fetch = fakeFetch([jsonReply(429, { msg: 'Email rate limit exceeded' })]);
+  const r = await remote({ fetch }).signIn('someone@example.com');
+
+  assert.match(r.error, /too many requests/i, `shown instead: ${r.error}`);
+});

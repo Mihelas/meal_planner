@@ -175,3 +175,23 @@ test('both outputs are built from the same app', () => {
   const appOf = (html) => html.slice(html.lastIndexOf('<script>'), html.lastIndexOf('</script>'));
   assert.equal(appOf(SHELL), appOf(SINGLE), 'the two builds contain different app code');
 });
+
+// --- Not in a search index.
+
+test('the published tree asks not to be indexed, twice', () => {
+  // Twice because the two halves fail differently. robots.txt stops a crawler
+  // that reads it before fetching; the meta stops one that fetched anyway from
+  // keeping what it found. Neither is security -- the page is public either way
+  // -- but a household's sign-in form has no business being a search result.
+  assert.ok(existsSync(dist('pwa', 'robots.txt')), 'no robots.txt in the published tree');
+  assert.match(read('pwa', 'robots.txt'), /^\s*User-agent:\s*\*\s*$/mi);
+  assert.match(read('pwa', 'robots.txt'), /^\s*Disallow:\s*\/\s*$/mi);
+  assert.match(SHELL, /<meta\s+name="robots"\s+content="[^"]*noindex/i,
+    'the shell does not tell a crawler that already has it to forget it');
+});
+
+test('the portable file carries no robots meta', () => {
+  // It has no origin and no crawler; the only thing the line would do in a
+  // Downloads folder is take up a line.
+  assert.doesNotMatch(SINGLE, /name="robots"/i);
+});

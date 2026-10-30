@@ -355,7 +355,12 @@ const isBanned = (memory, id) => (memory?.banned ?? []).includes(id);
 //
 // Here rather than in store.js because swap.js needs them and is built before it.
 
-const REMOVED_EMPTY = { banned: {}, favourites: {}, custom: {}, bought: {} };
+// Kept in step with REMOVED_BUCKETS in store.js by the test that compares them:
+// two lists because swap.js needs this one and is built before store.js, and a
+// bucket missing from either side is a deletion that silently does not stick.
+const REMOVED_EMPTY = {
+  banned: {}, favourites: {}, custom: {}, bought: {}, pantry: {}, ratings: {}, notes: {},
+};
 const removedBuckets = (memory) => {
   const r = memory?.removed && typeof memory.removed === 'object' ? memory.removed : {};
   const out = {};

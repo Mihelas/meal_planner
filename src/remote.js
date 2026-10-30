@@ -263,6 +263,17 @@ function problemText(payload) {
  */
 const OFFLINE = 'You appear to be offline. The app still works; try signing in when you have a connection.';
 
+/**
+ * Supabase's way of saying "that address has no account here".
+ *
+ * Two shapes, because a refused sign-up is phrased differently depending on
+ * whether it was turned off in the dashboard or asked for per-request:
+ * `otp_disabled` with "Signups not allowed for otp", and the plainer "Signups
+ * not allowed". Matched loosely so a wording change upstream costs a vague
+ * sentence rather than a wrong one.
+ */
+const NO_ACCOUNT = /signups? not allowed|user not found/i;
+
 // ------------------------------------------------------------------ the API
 export function createRemote({
   win,
@@ -339,13 +350,31 @@ export function createRemote({
         return { ok: false, error };
       }
       const r = await call(OTP_PATH, {
-        body: { email: addr, options: { email_redirect_to: redirectTo() } },
+        // `should_create_user: false` is the lock on the front door. The page
+        // itself cannot be one -- it is a static file on a public host, and every
+        // browser that loads it has already downloaded the whole app. What can be
+        // locked is the only thing the app asks the server to do for a stranger,
+        // which is send a code. Without this, any address on earth can make an
+        // account here: a mailbox full of codes from a domain that is ours, a
+        // monthly-active-user bill that is ours, and a row in auth.users for
+        // every passer-by.
+        //
+        // The cost is that a new person cannot let themselves in either. An
+        // invited friend needs an account made for them first -- see
+        // supabase/dashboard.md. For a household app that is the right way
+        // round: joining is a conversation, not a form.
+        body: {
+          email: addr,
+          options: { email_redirect_to: redirectTo(), should_create_user: false },
+        },
       });
       if (r.offline) { error = OFFLINE; changed(); return { ok: false, error }; }
       if (!r.ok) {
         error = r.status === 429
           ? `Too many requests just now — ${problemText(r.payload) ?? 'give it a moment and try again.'}`
-          : problemText(r.payload) ?? `The link could not be sent (${r.status}).`;
+          : NO_ACCOUNT.test(problemText(r.payload) ?? '') || r.payload?.error_code === 'otp_disabled'
+            ? 'There is no account for that address. Ask whoever runs this plan to add you — signing up is closed on purpose.'
+            : problemText(r.payload) ?? `The link could not be sent (${r.status}).`;
         changed();
         return { ok: false, error };
       }

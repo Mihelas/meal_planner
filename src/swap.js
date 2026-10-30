@@ -333,9 +333,16 @@ export const RATINGS = [1, 2, 3, 4, 5];
 export function rateRecipe(memory, recipeId, stars) {
   const ratings = { ...(memory?.ratings ?? {}) };
   const n = Math.round(Number(stars));
-  if (!RATINGS.includes(n) || ratings[recipeId] === n) delete ratings[recipeId];
+  const clearing = !RATINGS.includes(n) || ratings[recipeId] === n;
+  if (clearing) delete ratings[recipeId];
   else ratings[recipeId] = n;
-  return { ...memory, ratings };
+  // Both maps merge by spread, which cannot tell an absent key from a deleted
+  // one: without the note the side that still holds a score wins whichever phone
+  // was saved later, and a rating somebody cleared keeps steering the planner.
+  const next = clearing
+    ? forget({ ...memory, ratings }, 'ratings', recipeId)
+    : remember({ ...memory, ratings }, 'ratings', recipeId);
+  return next;
 }
 
 /** A free-text note that resurfaces every time the recipe comes back. */
@@ -344,7 +351,9 @@ export function noteRecipe(memory, recipeId, text) {
   const clean = String(text ?? '').trim().slice(0, 400);
   if (clean) notes[recipeId] = clean;
   else delete notes[recipeId];
-  return { ...memory, notes };
+  return clean
+    ? remember({ ...memory, notes }, 'notes', recipeId)
+    : forget({ ...memory, notes }, 'notes', recipeId);
 }
 
 /**
@@ -355,17 +364,45 @@ export function noteRecipe(memory, recipeId, text) {
 export function setPantry(memory, key, qty) {
   const pantry = { ...(memory?.pantry ?? {}) };
   const n = Number(qty);
-  if (Number.isFinite(n) && n > 0) pantry[key] = n;
+  const have = Number.isFinite(n) && n > 0;
+  if (have) pantry[key] = n;
   else delete pantry[key];
-  return { ...memory, pantry };
+  // The cupboard merges on `Math.max`, which has no way to say "I have none":
+  // without the note, taking the last of the rice out here has the other phone
+  // put it back, and then the shopping list leaves rice off.
+  return have
+    ? remember({ ...memory, pantry }, 'pantry', key)
+    : forget({ ...memory, pantry }, 'pantry', key);
 }
 
 export function togglePantry(memory, key, qty = 1) {
   return (memory?.pantry ?? {})[key] ? setPantry(memory, key, 0) : setPantry(memory, key, qty);
 }
 
-/** Pantry entries go stale fast; this is the "shopping done" reset. */
-export const clearPantry = (memory) => ({ ...memory, pantry: {} });
+/**
+ * Pantry entries go stale fast; this is the "shopping done" reset.
+ *
+ * One note per staple, not one for the act: the merge resolves per key, and a
+ * bulk delete that records nothing is the same bug once per item.
+ */
+export function clearPantry(memory) {
+  let next = { ...memory, pantry: {} };
+  for (const key of Object.keys(memory?.pantry ?? {})) next = forget(next, 'pantry', key);
+  return next;
+}
+
+/**
+ * "Reset ticks" — the shopping list, emptied.
+ *
+ * Same shape as clearPantry and for the same reason: one note per item. A
+ * wholesale `bought: {}` records nothing, so every tick comes back from the
+ * other phone on the next sync and the list reads as already shopped.
+ */
+export function clearBought(memory, bought) {
+  let next = memory;
+  for (const [id, on] of Object.entries(bought ?? {})) if (on) next = forget(next, 'bought', id);
+  return next;
+}
 
 // ------------------------------------------------------------- own recipes
 /**

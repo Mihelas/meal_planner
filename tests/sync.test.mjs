@@ -399,3 +399,102 @@ test('once the file is readable again, syncing resumes', async () => {
   assert.equal(box.writes, 1, 'it did not start writing again');
   assert.equal(s.error, null);
 });
+
+// ------------------------------------------------- one mechanism at a time
+//
+// The file and the household row are two merge paths into one document. The
+// file came first and is a desktop-only fallback; the household is the one two
+// phones actually use. Running both means every future bug in either has a
+// second door, so the file stands down while there is a household.
+
+/** What the app writes into state once the household row has been read. */
+const joinHousehold = (st) => st.save({
+  ...st.state,
+  cloud: { ...(st.state.cloud ?? {}), householdId: 'hh-1', rev: 3, at: null },
+});
+
+const leaveHousehold = (st) => st.save({
+  ...st.state,
+  cloud: { ...(st.state.cloud ?? {}), householdId: null, rev: 0, at: null },
+});
+
+test('a linked file is not written to once there is a household', async () => {
+  const { s, st, box } = sync();
+  await s.link();
+  const before = box.writes;
+  assert.ok(before > 0, 'linking did not write the file, so there is nothing to stop');
+
+  joinHousehold(st);
+  const r = await s.push({ force: true });
+
+  assert.equal(r.ok, false, 'the file was written while the household was sharing the same week');
+  assert.equal(box.writes, before, 'a second route into the plan is still writing');
+});
+
+test('and it is not read from either', async () => {
+  const { s, st, box } = sync();
+  await s.link();
+  joinHousehold(st);
+
+  // Somebody else's week, sitting in the file. Reading it would fold a document
+  // the household knows nothing about into the one the household is managing.
+  box.text = JSON.stringify({ ...snapshot(st.state), savedAt: Date.now() + 10_000 });
+  const r = await s.pull();
+
+  assert.equal(r.ok, false, 'the file was merged in behind the household\'s back');
+});
+
+test('the debounce does not even start', async () => {
+  const { s, st, win, box } = sync();
+  await s.link();
+  const before = box.writes;
+
+  joinHousehold(st);
+  s.schedule();
+  await win.tick();
+
+  assert.equal(box.writes, before, 'a queued write survived the handover');
+});
+
+test('the link is kept, explained, and still removable', async () => {
+  const { s, st, box } = sync();
+  await s.link();
+  joinHousehold(st);
+
+  assert.equal(s.linked, true, 'the link was dropped silently, so there is nothing left to unlink');
+  assert.equal(s.standDown, true);
+  assert.match(s.status.text, /paused/i, `the panel says: ${s.status.text}`);
+  assert.match(s.status.text, /unlink/i, 'nothing says how to have the file back instead');
+
+  await s.unlink();
+  assert.equal(s.linked, false);
+  assert.equal(box.writes > 0, true, 'unlink is not meant to wipe the file');
+});
+
+test('leaving the household hands the file back', async () => {
+  const { s, st, box } = sync();
+  await s.link();
+  joinHousehold(st);
+  await s.push({ force: true });
+  const quiet = box.writes;
+
+  leaveHousehold(st);
+  const r = await s.push({ force: true });
+
+  assert.equal(r.ok, true, `the file stayed shut after the household went away: ${r.error}`);
+  assert.equal(box.writes, quiet + 1);
+  assert.equal(s.standDown, false);
+});
+
+test('with no file ever linked the household case says so plainly', () => {
+  const paused = describeSync({ sync: {} }, { standDown: true });
+  assert.match(paused.text, /household/i);
+  assert.doesNotMatch(paused.text, /not linked|pick one file/i,
+    'it still invites a second route into the same plan');
+
+  // And the advice for a browser that cannot do files at all is beside the
+  // point once a household is doing the job -- Export/Import is not the answer
+  // to a question nobody is asking any more.
+  const unsupported = describeSync({ sync: {} }, { standDown: true, supported: false });
+  assert.doesNotMatch(unsupported.text, /export/i, `shown instead: ${unsupported.text}`);
+});

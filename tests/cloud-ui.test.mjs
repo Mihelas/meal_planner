@@ -57,6 +57,24 @@ const HER_DINNER = 'd-palak-paneer';
 const HER_DINNER_NAME = /palak paneer/i;
 
 /**
+ * This phone: a week, and months of durable data attached to it.
+ *
+ * Saved an hour before hers on purpose. The two buttons exist because the
+ * person is answering a question, and their answer has to outrank whichever
+ * week happens to carry the later stamp -- otherwise the question was theatre.
+ */
+const myWeek = () => {
+  REAL ??= open({}).state();
+  const doc = JSON.parse(JSON.stringify(REAL));
+  delete doc.cloud;
+  delete doc.sync;
+  doc.memory.banned = ['my-ban'];
+  doc.memory.ratings = { [HER_DINNER]: 5 };
+  doc.savedAt = Date.now() - 3600_000;
+  return JSON.stringify(doc);
+};
+
+/**
  * A fetch that routes by path, with one mutable household_state row behind it.
  *
  * The row is stateful because the interesting cases all involve reading what
@@ -210,6 +228,50 @@ test('taking the household\'s week replaces this phone\'s', async () => {
   assert.deepEqual(app.errors, []);
 });
 
+// The question promises that one of the two *weeks* is replaced. It used to
+// replace the whole document, in whichever direction was chosen -- so the losing
+// side's bans, ratings, own recipes and weight log went with the week they
+// happened to be attached to, and nothing on screen said so. These two hold the
+// banner to what it says.
+
+test("keeping this phone's week keeps her bans as well", async () => {
+  const fetch = cloudFake({ row: herWeek(), rev: 4 });
+  const app = signedIn({ fetch, stored: myWeek() });
+  await settle(12);
+  const was = app.weekText();
+
+  app.click('[data-act="cloud-keep"]');
+  await settle(4);
+  await flush(app);
+
+  assert.equal(app.weekText(), was, 'keeping this week changed it');
+  assert.ok(app.state().memory.banned.includes('my-ban'), "it dropped this phone's own ban");
+  assert.ok(app.state().memory.banned.includes('her-ban'),
+    'her ban was thrown away with the week it happened to be attached to');
+  assert.deepEqual(fetch.row().doc.memory.banned.sort(), ['her-ban', 'my-ban'],
+    'the household row was left holding one side of the pair');
+  assert.deepEqual(app.errors, []);
+});
+
+test("taking the household's week keeps this phone's ratings", async () => {
+  const fetch = cloudFake({ row: herWeek(), rev: 4 });
+  const app = signedIn({ fetch, stored: myWeek() });
+  await settle(12);
+
+  app.click('[data-act="cloud-take"]');
+  await settle(6);
+  await flush(app);
+
+  assert.match(slotName(app, 0, 'dinner') ?? '', HER_DINNER_NAME, "the household's week did not arrive");
+  assert.ok(app.state().memory.banned.includes('her-ban'), 'her bans did not come with her week');
+  assert.ok(app.state().memory.banned.includes('my-ban'),
+    "this phone's ban went with the week it did not keep");
+  assert.equal(app.state().memory.ratings[HER_DINNER], 5, 'months of ratings were replaced by hers');
+  assert.ok(fetch.row().doc.memory.banned.includes('my-ban'),
+    'the union stayed on this phone and never reached the household');
+  assert.deepEqual(app.errors, []);
+});
+
 // ------------------------------------------------------------- the push itself
 
 test('the revision never travels inside the week', async () => {
@@ -293,6 +355,118 @@ test('a week that could not be sent says so, and the Retry is a button', async (
   assert.deepEqual(app.errors, []);
 });
 
+test('a phone that is behind does not publish what it could not read', async () => {
+  // The other half of the schema gate. migrate() now keeps the fields a newer
+  // build wrote instead of deleting them, but keeping them locally is not
+  // enough: the plan may still have been rebuilt, and anything this build does
+  // not understand it also cannot maintain. So while the document says it came
+  // from a newer version, this phone reads and shows, and writes nothing to the
+  // household. The row keeps the real week until the app updates.
+  const stale = herWeek();
+  stale.schema = 99;
+  stale.puddingRota = { tuesday: 'crumble' };
+  stale.cloud = { householdId: HID, rev: 4, at: null };
+
+  const fetch = cloudFake({ row: herWeek(), rev: 4 });
+  const app = signedIn({ fetch, stored: JSON.stringify(stale) });
+  await settle(12);
+  await flush(app);
+
+  assert.equal(fetch.to('household_state', 'PATCH').length, 0,
+    'a phone that cannot read the week still overwrote the household with its own copy of it');
+  assert.equal(fetch.row().rev, 4, 'the revision moved, so something was published');
+  assert.match(pageText(app), /newer version/i, 'nothing said why this phone is not saving');
+  assert.deepEqual(app.errors, []);
+});
+
+test('a row that could not be read on sign-in is asked again, not given up on', async () => {
+  // The guard that stops render() fetching twice is set before the request, so
+  // it has to be let go of when the request fails. Two seconds of bad signal in
+  // the wrong place used to cost the whole session: no bookmark, no watcher, no
+  // push, no error, and no retry button -- because the queue was never reached,
+  // so there was nothing for the card to report as broken.
+  let down = true;
+  const live = cloudFake({ row: {}, rev: 0 });
+  const fetch = async (url, init = {}) => {
+    if (down && String(url).includes('household_state')) throw new TypeError('Failed to fetch');
+    return live(url, init);
+  };
+
+  const app = signedIn({ fetch });
+  await settle(12);
+  assert.equal(app.state().cloud.householdId, null, 'it bookmarked a row it never managed to read');
+
+  down = false;
+  app.tab('settings');
+  await settle(12);
+  await flush(app);
+
+  assert.equal(app.state().cloud.householdId, HID,
+    'two seconds of bad signal at sign-in stranded the week for the rest of the session');
+  assert.equal(live.row().rev, 1, 'the week never reached the household');
+  assert.deepEqual(app.errors, []);
+});
+
+test('a row that keeps refusing is retried, but never in a tight loop', async () => {
+  // The guard above is let go of so that one bad moment is not permanent. The
+  // handler that let it go used to call render() as well -- and render() is the
+  // thing that asks. So a row failing for any lasting reason (no route, no
+  // network, a policy that says no) asked again at once, failed again at once,
+  // and did it all inside a promise chain: the microtask queue never drained, no
+  // timer ever got a turn, and the tab did not degrade, it locked.
+  //
+  // The row is held down here and the asking is counted. It relents at the
+  // ceiling on purpose -- a test that never returns reports nothing, so a
+  // regression has to come back as a failed assertion rather than as a suite
+  // that hangs and gets read as slow.
+  const CEILING = 40;
+  let tries = 0;
+  const live = cloudFake({ row: {}, rev: 0 });
+  const fetch = async (url, init = {}) => {
+    const path = String(url).replace(/^https?:\/\/[^/]+/, '');
+    if (path.startsWith('/rest/v1/household_state') && (init.method ?? 'GET') === 'GET') {
+      tries += 1;
+      if (tries < CEILING) throw new TypeError('Failed to fetch');
+    }
+    return live(url, init);
+  };
+
+  const app = signedIn({ fetch });
+  await settle(16);
+
+  assert.ok(tries > 0, 'the row was never asked for at all');
+  assert.ok(tries < CEILING, `the row was asked ${tries} times: render() is asking itself in a loop`);
+  assert.deepEqual(app.errors, []);
+});
+
+test('a week arriving from the other phone takes the Undo offer away', async () => {
+  // Undo is a snapshot of the whole document, which is honest for one step back
+  // and a lie once somebody else's work has arrived on top: rolling back to it
+  // would quietly throw away her swap, her weigh-in and her cupboard along with
+  // this phone's ban -- and then push the rollback out as the newest word.
+  const fetch = cloudFake({ row: {}, rev: 0 });
+  const app = signedIn({ fetch });
+  await settle(12);
+  await flush(app);
+
+  const row = [...app.$$('.day')[3].querySelectorAll('.slot')].find((r) => r.querySelector('[data-ban]'));
+  app.click(row.querySelector('[data-ban]'));
+  assert.ok(app.$('[data-act="undo"]'), 'the ban was not offered as undoable at all');
+
+  const mine = fetch.row().doc;
+  fetch.her({
+    ...mine,
+    savedAt: Date.now() + 1000,
+    memory: { ...mine.memory, banned: [...(mine.memory?.banned ?? []), 'her-ban'] },
+  });
+  await flush(app);
+
+  assert.ok(app.state().memory.banned.includes('her-ban'), 'her ban never arrived, so there is nothing to protect');
+  assert.equal(app.$('[data-act="undo"]'), null,
+    'Undo still offers to roll back to a moment before her work existed');
+  assert.deepEqual(app.errors, []);
+});
+
 test('two phones editing the same week both keep their work', async () => {
   const fetch = cloudFake({ row: {}, rev: 0 });
   const app = signedIn({ fetch });
@@ -321,5 +495,109 @@ test('two phones editing the same week both keep their work', async () => {
   assert.ok(app.state().memory.banned.includes('her-ban'), 'her ban never reached this phone');
   assert.deepEqual(fetch.row().doc.plan, app.state().plan, 'the row and the phone disagree about the week');
   assert.equal(app.state().cloud.rev, 3);
+  assert.deepEqual(app.errors, []);
+});
+
+// ------------------------------------------------- arrivals and open sheets
+//
+// render() replaces the whole page, so anything the person has open goes with
+// it: a swap sheet closes, a half-typed weight is gone, the cursor with it. For
+// a render they caused that is correct -- they tapped something and this is the
+// answer. For one that arrived from the other phone it is not, and the loss is
+// real from their side even though the store never lost anything.
+
+/** A week of hers, built from what is in the row, with Monday's dinner moved. */
+const herVersionOf = (doc) => {
+  const hers = JSON.parse(JSON.stringify(doc));
+  const when = Date.now() + 1000;
+  hers.savedAt = when;
+  hers.plan.days[0].dinner.recipeId = HER_DINNER;
+  hers.plan.days[0].dinner.touched = { at: when, device: 'hers' };
+  return hers;
+};
+
+/** The swap button on a day-3 slot that is a real recipe, so the sheet opens. */
+const swapButton = (app) => {
+  const row = [...app.$$('.day')[3].querySelectorAll('.slot')]
+    .find((r) => r.querySelector('[data-ban]') && r.querySelector('[data-swap]'));
+  assert.ok(row, 'no day-3 slot with a recipe in it');
+  return row.querySelector('[data-swap]');
+};
+
+test('her week arriving while a sheet is open does not close it', async () => {
+  const fetch = cloudFake({ row: {}, rev: 0 });
+  const app = signedIn({ fetch });
+  await settle(12);
+  await flush(app);
+
+  // An edit, so there is a push waiting to be sent...
+  const row = [...app.$$('.day')[3].querySelectorAll('.slot')].find((r) => r.querySelector('[data-ban]'));
+  app.click(row.querySelector('[data-ban]'));
+  // ...and the other phone gets there first, with a different Monday dinner.
+  fetch.her(herVersionOf(fetch.row().doc));
+
+  // Somebody opens the swap sheet while that push is still in the air.
+  app.click(swapButton(app));
+  assert.ok(app.$('#swap[open]'), 'the swap sheet did not open');
+  const shown = slotName(app, 0, 'dinner');
+
+  await flush(app);
+
+  assert.ok(app.$('#swap[open]'),
+    'her week arriving closed the sheet somebody was in the middle of using');
+  assert.match(app.state().plan.days[0].dinner.recipeId, new RegExp(HER_DINNER),
+    'her week did not arrive at all, so there is nothing being deferred');
+  assert.equal(slotName(app, 0, 'dinner'), shown,
+    'the week behind the sheet was redrawn under it');
+  assert.deepEqual(app.errors, []);
+});
+
+test('and it is shown the moment the sheet closes', async () => {
+  const fetch = cloudFake({ row: {}, rev: 0 });
+  const app = signedIn({ fetch });
+  await settle(12);
+  await flush(app);
+
+  const row = [...app.$$('.day')[3].querySelectorAll('.slot')].find((r) => r.querySelector('[data-ban]'));
+  app.click(row.querySelector('[data-ban]'));
+  fetch.her(herVersionOf(fetch.row().doc));
+
+  app.click(swapButton(app));
+  await flush(app);
+
+  app.click('#swap [data-close]');
+  await settle(4);
+
+  assert.equal(app.$('#swap[open]'), null, 'the sheet did not close');
+  assert.match(slotName(app, 0, 'dinner') ?? '', HER_DINNER_NAME,
+    'the update that was waiting for the sheet is still waiting');
+  assert.deepEqual(app.errors, []);
+});
+
+test('a sheet dismissed with Escape releases it too', async () => {
+  // Escape goes through none of the buttons: the browser closes the dialog
+  // itself and fires `close` on it. The harness's showModal/close stubs do not
+  // fire that event, so it is dispatched here the way a browser would -- which
+  // is exactly the wiring under test.
+  const fetch = cloudFake({ row: {}, rev: 0 });
+  const app = signedIn({ fetch });
+  await settle(12);
+  await flush(app);
+
+  const row = [...app.$$('.day')[3].querySelectorAll('.slot')].find((r) => r.querySelector('[data-ban]'));
+  app.click(row.querySelector('[data-ban]'));
+  fetch.her(herVersionOf(fetch.row().doc));
+
+  app.click(swapButton(app));
+  await flush(app);
+  assert.ok(app.$('#swap[open]'), 'the arrival was never deferred, so there is nothing to release');
+
+  const dlg = app.$('#swap');
+  dlg.removeAttribute('open');
+  dlg.dispatchEvent(new app.window.Event('close'));
+  await settle(4);
+
+  assert.match(slotName(app, 0, 'dinner') ?? '', HER_DINNER_NAME,
+    'Escape left her week sitting unpainted until the next poll');
   assert.deepEqual(app.errors, []);
 });

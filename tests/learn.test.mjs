@@ -6,7 +6,7 @@ import {
   RATING_WEIGHT, SWAP_AWAY_WEIGHT, KEPT_WEIGHT, PANTRY_WEIGHT,
 } from '../src/planner.js';
 import {
-  rateRecipe, noteRecipe, setPantry, togglePantry, clearPantry, swapAndLearn, RATINGS,
+  rateRecipe, noteRecipe, setPantry, togglePantry, clearPantry, clearBought, swapAndLearn, RATINGS,
 } from '../src/swap.js';
 import { recipeById, RECIPES } from '../src/recipes.js';
 import { SEASON_PENALTY } from '../src/seasons.js';
@@ -183,6 +183,54 @@ test('a zero or negative amount means "I do not have it", not "I have none of it
 
 test('clearing the pantry after shopping empties it completely', () => {
   assert.deepEqual(clearPantry({ pantry: { a: 1, b: 2 } }).pantry, {});
+});
+
+test('taking something out of the cupboard leaves a note saying so', () => {
+  // Without it the merge has nothing to work with: the other phone still lists
+  // the staple, max keeps the larger amount, and the rice is back. The note is
+  // dropped again when it is restocked, or the other phone would delete it
+  // twice.
+  const key = pantryKey({ item: 'Reis', unit: 'g' });
+  const gone = setPantry({ pantry: { [key]: 500 } }, key, 0);
+  assert.ok(gone.removed.pantry[key] > 0, 'emptying a staple left no note, so the other phone re-stocks it');
+
+  const back = setPantry(gone, key, 500);
+  assert.equal(back.removed.pantry[key], undefined, 'the stale note would have the other phone delete it again');
+});
+
+test('emptying the whole cupboard leaves a note for every staple in it', () => {
+  // "Shopping done" is a bulk delete, and a bulk delete that records nothing is
+  // the same bug once per item.
+  const out = clearPantry({ pantry: { a: 1, b: 2 } });
+  assert.deepEqual(out.pantry, {});
+  assert.ok(out.removed.pantry.a > 0);
+  assert.ok(out.removed.pantry.b > 0);
+});
+
+test('resetting the shopping ticks records every one of them', () => {
+  const out = clearBought({}, { 'milch-1-5-ml': true, 'reis-1000-g': true, 'brot-1-st': false });
+  assert.ok(out.removed.bought['milch-1-5-ml'] > 0);
+  assert.ok(out.removed.bought['reis-1000-g'] > 0);
+  assert.equal(out.removed.bought['brot-1-st'], undefined, 'an item that was never ticked was recorded as un-ticked');
+});
+
+test('clearing a rating or a note leaves one too', () => {
+  // Clearing a rating is one click on the star that is already lit -- ordinary
+  // use, not an edge case.
+  const id = 'd-huehner-ramen';
+  const rated = rateRecipe({}, id, 4);
+  assert.equal(rated.removed?.ratings?.[id], undefined, 'rating something recorded a deletion');
+
+  const cleared = rateRecipe(rated, id, 4);
+  assert.equal(cleared.ratings[id], undefined);
+  assert.ok(cleared.removed.ratings[id] > 0, 'the cleared rating comes back from the other phone');
+  assert.equal(rateRecipe(cleared, id, 2).removed.ratings[id], undefined, 'the stale note deletes the new rating');
+
+  const noted = noteRecipe({}, id, 'too salty');
+  const unnoted = noteRecipe(noted, id, '  ');
+  assert.equal(unnoted.notes[id], undefined);
+  assert.ok(unnoted.removed.notes[id] > 0, 'the cleared note comes back from the other phone');
+  assert.equal(noteRecipe(unnoted, id, 'better now').removed.notes[id], undefined);
 });
 
 test('having the ingredients in already pulls a recipe forward, by its coverage', () => {

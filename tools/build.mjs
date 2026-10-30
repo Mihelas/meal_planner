@@ -24,7 +24,7 @@ const OUT = path.join(root, 'dist', 'meal-planner.html');
 const PWA = path.join(root, 'dist', 'pwa');
 
 // Dependency order: a module may only import from ones earlier in this list.
-const MODULES = ['targets.js', 'recipes.js', 'seasons.js', 'planner.js', 'swap.js', 'shopping.js', 'store.js', 'remote.js', 'rest.js', 'household.js', 'cloud.js', 'sync.js', 'install.js', 'ui.js', 'app.js'];
+const MODULES = ['clock.js', 'targets.js', 'recipes.js', 'seasons.js', 'planner.js', 'swap.js', 'shopping.js', 'store.js', 'remote.js', 'rest.js', 'household.js', 'cloud.js', 'sync.js', 'install.js', 'ui.js', 'app.js'];
 
 const RE_IMPORT = /^import\s*\{([\s\S]*?)\}\s*from\s*'\.\/([\w.-]+)'\s*;?\s*$/gm;
 const RE_ANY_IMPORT = /^\s*import\s/m;
@@ -199,6 +199,7 @@ const PWA_HEAD = `<link rel="manifest" href="manifest.webmanifest">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Meals">
+<meta name="robots" content="noindex, nofollow">
 <script>
 // Registered from the page rather than the bundle, because this is the one thing
 // the two builds cannot share: there is no origin to register against in a file
@@ -267,10 +268,11 @@ await put(path.join(PWA, 'sw.js'), sw);
 // phone gets a 404. Deliberately kept out of the cache-version hash above: it is
 // not part of the app, and changing a domain should not re-download 450 kB.
 await put(path.join(PWA, 'CNAME'), await readFile(path.join(root, 'pwa', 'CNAME'), 'utf8'));
+await put(path.join(PWA, 'robots.txt'), await readFile(path.join(root, 'pwa', 'robots.txt'), 'utf8'));
 for (const i of ICONS) await put(path.join(PWA, 'icons', i.file), icon(i.size, i.opts));
 
 const kb = (n) => `${(n / 1024).toFixed(0)} kB`;
 console.log(`built ${path.relative(root, OUT)} - ${kb(Buffer.byteLength(single))}, `
   + `${MODULES.length} modules inlined`);
 console.log(`built ${path.relative(root, PWA)}/ - shell, manifest, sw (${version}), `
-  + `${ICONS.length} icons, CNAME`);
+  + `${ICONS.length} icons, CNAME, robots`);

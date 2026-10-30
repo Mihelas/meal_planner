@@ -112,8 +112,19 @@ export async function writeHandle(handle, text) {
 }
 
 /** A short, plain sentence for the sync panel. No jargon, no timestamps in ms. */
-export function describeSync(state, { supported = true, permission = 'granted' } = {}) {
+export function describeSync(state, { supported = true, permission = 'granted', standDown = false } = {}) {
   const sync = state?.sync ?? {};
+  // Before the support check, not after: a household already moves the week
+  // between devices, so telling a Safari user to reach for Export and Import
+  // would be advice for a problem they no longer have.
+  if (standDown) {
+    return sync.name
+      ? {
+        tone: 'info',
+        text: `Paused. ${sync.name} is not being read or written while this device shares a week with a household — two routes into one plan is how something deleted on one comes back from the other. Unlink the file if you would rather share that way instead.`,
+      }
+      : { tone: 'info', text: 'The household is sharing this week; a shared file would be a second route into the same plan.' };
+  }
   if (!supported) {
     return {
       tone: 'info',
@@ -168,7 +179,25 @@ export const isBlank = (text) => !text || !text.trim();
  * enough that a synced folder is not being hammered. */
 export const PULL_EVERY_MS = 60_000;
 
-export function createSync({ win, store, handles = null, onChange = () => {}, debounceMs = 1200 }) {
+export function createSync({
+  win, store, handles = null, onChange = () => {}, debounceMs = 1200,
+  /**
+   * One sharing mechanism at a time.
+   *
+   * The file and the household row are two merge paths into the same document.
+   * Both are careful on their own, and both were still enough together to lose a
+   * week: a merge folded in from the file left this device's note of the row
+   * untouched, so her bans sat here until an unrelated edit happened to push
+   * them. That particular hole is closed, but the shape of it is not -- any
+   * future bug in either path gets a second door to come through, and a
+   * household that works makes the file redundant anyway.
+   *
+   * A predicate rather than a flag because the answer changes mid-session: the
+   * same tab joins a household, or leaves one. Defaulted here rather than passed
+   * from app.js so that nothing has to remember to wire it up.
+   */
+  standDown = () => Boolean(store?.state?.cloud?.householdId),
+}) {
   const box = handles ?? (win?.indexedDB ? idbHandles(win) : memoryHandles());
   let handle = null;
   let permission = 'prompt';
@@ -184,7 +213,7 @@ export function createSync({ win, store, handles = null, onChange = () => {}, de
   let pollEvery = PULL_EVERY_MS;
   let watching = null;    // the focus/visibility listener, kept so it can be removed
 
-  const ready = () => Boolean(handle) && permission === 'granted';
+  const ready = () => Boolean(handle) && permission === 'granted' && !standDown();
   /** No `document` at all (tests, a worker) counts as visible: there is nothing to hide. */
   const visible = () => (win?.document?.visibilityState ?? 'visible') !== 'hidden';
 
@@ -209,8 +238,10 @@ export function createSync({ win, store, handles = null, onChange = () => {}, de
     if (!handle) return { ok: false };
     permission = await permissionFor(handle);
     // Only pull when the browser is already happy: asking needs a click, and a
-    // click cannot happen during boot.
-    if (permission !== 'granted') { onChange(); return { ok: false }; }
+    // click cannot happen during boot. ready() also covers standing down, so a
+    // device that joined a household keeps the link visible -- and unlinkable --
+    // without reading from it.
+    if (!ready()) { onChange(); return { ok: false }; }
     const res = await pull();
     onChange();
     return res;
@@ -283,7 +314,7 @@ export function createSync({ win, store, handles = null, onChange = () => {}, de
   }
 
   async function pull() {
-    if (!handle || permission !== 'granted') return { ok: false };
+    if (!ready()) return { ok: false };
     armPoll();
     let text;
     try {
@@ -311,7 +342,7 @@ export function createSync({ win, store, handles = null, onChange = () => {}, de
   }
 
   async function push({ force = false, fresh = false } = {}) {
-    if (!handle || permission !== 'granted') return { ok: false };
+    if (!ready()) return { ok: false };
     if (blocked) return { ok: false, error };
     if (busy && !force) { pending = true; return { ok: false }; }
     busy = true;
@@ -346,7 +377,7 @@ export function createSync({ win, store, handles = null, onChange = () => {}, de
    * field re-renders on each keystroke and none of those deserve a disk write.
    */
   function schedule() {
-    if (!handle || permission !== 'granted') return;
+    if (!ready()) return;
     if (timer) win?.clearTimeout?.(timer);
     timer = win?.setTimeout?.(() => { timer = null; return push(); }, debounceMs);
   }
@@ -413,8 +444,14 @@ export function createSync({ win, store, handles = null, onChange = () => {}, de
     get linked() { return Boolean(handle); },
     get permission() { return permission; },
     get error() { return error; },
+    /** True while the household is doing this job, so the file must not. */
+    get standDown() { return standDown(); },
     get status() {
-      return describeSync(store.state, { supported: syncSupported(win), permission: handle ? permission : 'granted' });
+      return describeSync(store.state, {
+        supported: syncSupported(win),
+        permission: handle ? permission : 'granted',
+        standDown: standDown(),
+      });
     },
     restore, link, reconnect, pull, push, schedule, unlink, watch, unwatch,
     /** Flush anything the debounce is still holding, e.g. before the tab closes. */

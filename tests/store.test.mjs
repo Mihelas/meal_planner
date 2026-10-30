@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createStore, emptyState, migrate, cloudDoc, sameDoc, addWeight, weightTrend, STORAGE_KEY, SCHEMA_VERSION,
+  createStore, emptyState, migrate, mergeStates, cloudDoc, sameDoc, addWeight, weightTrend,
+  STORAGE_KEY, SCHEMA_VERSION,
 } from '../src/store.js';
 import {
   generateWeek, defaultSettings, PLAN_VERSION, pantryKey, legacyPantryKey,
@@ -307,6 +308,76 @@ test('what travels to the household leaves this device behind', () => {
   assert.equal(doc.savedAt, 99, 'savedAt is the merge tie-breaker and has to travel');
   assert.deepEqual(doc.plan, s.plan);
   assert.deepEqual(doc.memory, s.memory);
+});
+
+test('the tab this phone is on does not travel, or the two never stop pushing', () => {
+  // sameDoc is what stops two phones trading merges for ever: fold in the
+  // remote week, and push back only if the row does not already hold the
+  // result. `ui` is the one field mergeStates deliberately does not merge --
+  // being on the shopping list is not an opinion about the week -- so if it
+  // travelled, the merged result could never match the row while the two
+  // people were on different tabs, and each phone would re-push after every
+  // poll. Thirty seconds apart. For ever. Spending a revision each time.
+  const mine = migrate({ savedAt: 50, ui: { tab: 'shopping' } });
+  const theirs = cloudDoc(migrate({ savedAt: 60, ui: { tab: 'week' } }));
+
+  assert.equal(theirs.ui, undefined, 'the other phone was told which tab this one is on');
+
+  const merged = mergeStates(mine, theirs);
+  assert.equal(merged.ui.tab, 'shopping', 'the other phone moved this one off its tab');
+  assert.equal(sameDoc(cloudDoc(merged), theirs), true,
+    'the merge changed nothing but still does not match the row, so this phone will push back -- and so will hers, every thirty seconds, for ever');
+});
+
+test('a week from a newer build is not truncated and then republished', () => {
+  // The keep-set exists to drop junk, and junk is what an *older* document
+  // holds. A newer one holds fields this build has never heard of, and deleting
+  // them is destruction: two phones on different versions is the normal state of
+  // an installed PWA -- one of them updates first -- and the older one would
+  // strip the newer one's week and push the stripped copy back as the newest
+  // word. Whichever phone was behind would decide what the other one gets to
+  // keep.
+  const fromTheFuture = {
+    ...migrate({ savedAt: 10 }),
+    schema: SCHEMA_VERSION + 1,
+    puddingRota: { tuesday: 'crumble' },
+  };
+
+  const got = migrate(fromTheFuture);
+
+  assert.deepEqual(got.puddingRota, { tuesday: 'crumble' },
+    'an older build deleted a field it did not understand, and the next push published the deletion');
+  assert.equal(got.schema, SCHEMA_VERSION + 1,
+    'claiming to be this version would make the newer build trust the truncation');
+  assert.match(got.migrationNote ?? '', /newer version/i,
+    'nothing told anybody their phone is the one that is behind');
+});
+
+test('junk from an older document is still dropped', () => {
+  // The other half of the same decision: the gate must not become a licence to
+  // keep everything. A bug once wrote a key named after a recipe id, and it
+  // synced.
+  const got = migrate({ savedAt: 10, schema: SCHEMA_VERSION, 'dinner-shakshuka-42': true });
+  assert.equal('dinner-shakshuka-42' in got, false);
+  assert.equal(got.migrationNote, undefined, 'an ordinary load apologised for itself');
+});
+
+test('a restored backup does not point the phone at a household it has left', () => {
+  // `cloud` is this device's bookmark in the row: which household, and the
+  // revision its next push is conditioned on. Both are facts about the device,
+  // not about the week -- which is why cloudDoc strips them on the way out. A
+  // file exported before she joined carries the bookmark from before, and
+  // restoring it would silently re-aim the phone at an old household, or at
+  // none, with a revision that no longer means anything.
+  const win = fakeWindow();
+  const store = createStore(win);
+  store.load();
+  store.save({ ...store.state, cloud: { householdId: 'now', rev: 9, at: 5 } });
+
+  store.importJSON(JSON.stringify({ savedAt: 99, cloud: { householdId: 'old', rev: 2, at: 1 } }));
+
+  assert.equal(store.state.cloud.householdId, 'now', 'the backup re-aimed the phone at an old household');
+  assert.equal(store.state.cloud.rev, 9, "the backup overwrote the revision the next push depends on");
 });
 
 test('two documents that say the same thing in a different order are the same document', () => {

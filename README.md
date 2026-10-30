@@ -12,6 +12,14 @@ opened in.
 On a phone, open **[pikaeats.com](https://pikaeats.com)** and add it to the home
 screen. Same app, installable, and it keeps working with no signal.
 
+- **Android / Chrome** — a banner offers it, or ⋮ → **Install app**.
+- **iPhone / Safari** — there is no prompt and there never will be: **Share** (the
+  square with the arrow out of it) → **Add to Home Screen**. It has to be Safari;
+  Chrome on iOS cannot install anything.
+
+Installed, it opens with no browser bar and no address to mistype, and the service
+worker means a shop with no signal is not a problem.
+
 ## Using it
 
 | Button | What it does |
@@ -41,10 +49,35 @@ kcal/day and it will leave a residual uncorrected rather than prescribe a crash 
 days are yours to move in Settings, as long as at least one is left.
 
 ### Sharing a plan between two people
-Settings → **Sharing**. Link both browsers to the same JSON file in a shared folder
-(Dropbox, OneDrive, a synced drive) and the app merges rather than overwrites.
 
-The week merges **meal by meal**: she swaps Tuesday's dinner while you log a pizza on
+Two ways, and they run the same merge. An account is the one for phones; the shared
+file is the one for two desktops and no account.
+
+**With an account.** Settings → **Account** → type an email. The mail has a link *and*
+a 6-digit code, and either signs in the browser it is used in — so open the link on the
+phone you want signed in, or type the code there. No password, ever.
+
+Sign-up is closed: an address with no account here is told so rather than sent a code
+that would create one. The page is public — it is a static file, and any browser that
+loads it has the whole app — but the mailbox behind it is not, which is the part that
+costs money. Adding somebody is three steps in `supabase/dashboard.md`.
+
+Then Settings → **Households** → **Start a household**, and **Invite** the other person:
+that gives a code to send them however you like. They sign in on their own phone, type
+the code into **Join with a code**, and from then on both phones plan the same week —
+a swap on one shows up on the other within half a minute, and both work offline in
+between. Settings → **The shared week** says, in one line, whether the last change
+actually reached the household.
+
+Joining a household does not hand your week over. The first time two weeks meet, the
+app stops and asks which one to keep rather than guessing.
+
+**With a shared file.** Settings → **Sharing**. Link both browsers to the same JSON file
+in a shared folder (Dropbox, OneDrive, a synced drive) and the app merges rather than
+overwrites. Needs Chrome or Edge; everywhere else Export/Import does the same job by
+hand.
+
+Either way, the week merges **meal by meal**: she swaps Tuesday's dinner while you log a pizza on
 Thursday and both survive, because every plate carries the time it was last changed and
 the later change wins on that plate alone. Bans, ticks, ratings, notes, your own
 recipes, weigh-ins and the cupboard merge too, and a **deletion sticks** — un-banning a
@@ -52,16 +85,33 @@ recipe or un-ticking an item is recorded as a removal rather than quietly re-add
 the other copy. Settings are last-write-wins. If one of you re-rolls the whole week it
 is no longer the same week, so the newer one replaces the other and the app says so.
 
-Each side re-reads the file before writing it, and reads it again when you come back to
-the tab or every minute while it is open — so neither of you has to press anything.
+Nobody has to press anything. The file side re-reads before it writes, and again when
+you come back to the tab or every minute while it is open. The account side holds one
+row per household behind a revision number: a change is only written if nothing has
+changed underneath it, and if something has, the app pulls what landed, merges, and
+pushes again.
 
-Needs Chrome or Edge. Everywhere else, Export/Import does the same job by hand. A
-shared file that cannot be read or parsed is **never written over**.
+### When sync disagrees
+
+- **"The household has a newer week than this phone"** — somebody edited on the other
+  phone in the same few seconds. Nothing is lost; it retries by itself. **Try again now**
+  is there for impatience, not for repair.
+- **"Saving to the household…" that does not go away** — the phone has no usable
+  connection. The edit is on the phone and queued; it goes out on its own when the signal
+  comes back, and it survives the app being closed.
+- **Two weeks, one question** — only on the first sign-in, when both the phone and the
+  household already hold a planned week. They share no history, so a merge would produce
+  a week neither of you planned. Pick one. **Export your data** first if you want the
+  other one kept.
+- **A shared file that cannot be read or parsed is never written over** — fix or remove
+  the file; the app will not overwrite what it could not understand.
+- **"It is no longer the same week"** — one of you pressed **New week**. That replaces
+  rather than merges, on purpose, and the app says so.
 
 **Export your data** (Settings) before switching browser or clearing site data.
 Without an account nothing is uploaded anywhere — the sync file is a file on your own
-disk. With one, the week travels through your household's row in Supabase (see
-`supabase/README.md`), and the browser copy is still the one the app reads.
+disk. With one, the week travels through your household's row in Supabase
+(`supabase/migrations/`), and the browser copy is still the one the app reads.
 
 ## Where it lives
 
@@ -82,8 +132,8 @@ down in `supabase/dashboard.md`.
 ## Working on it
 
 ```
-npm test      # 636 tests, no browser needed
-npm run build # src/*.js -> dist/meal-planner.html (490 kB, 12 modules inlined)
+npm test      # 721 tests, no browser needed
+npm run build # src/*.js -> dist/meal-planner.html (542 kB, 15 modules inlined)
 npm run serve # http://localhost:4173, for poking at it
 ```
 
@@ -103,8 +153,18 @@ npm run serve # http://localhost:4173, for poking at it
   your own recipes.
 - `src/remote.js` — the account: email sign-in by link or 6-digit code, the session
   in its own storage key, and silent refresh. Knows nothing about meals.
+- `src/rest.js` — how a request is made and how a refusal becomes a sentence a person
+  can read. One definition, because households and the shared week ask the same
+  database the same way.
+- `src/household.js` — membership: who shares a plan with whom, invites, seats. Almost
+  all of the rule is in `supabase/migrations/0003` and `0004`; this asks and reports.
+- `src/cloud.js` — the week itself travelling. One row per household guarded by a
+  revision, a debounce so typing is one push, and a poll for what the other phone
+  wrote. Knows nothing about the shape of the document — `merge` is handed in.
 - `src/sync.js` — the shared-file link. Transport (File System Access API + a handle in
   IndexedDB) is separate from `mergeStates`, which is pure and knows nothing about files.
+- `src/install.js` — the home-screen nudge, which is a different sentence on Android
+  (an event to catch) than on iOS (no API at all, so prose).
 - `src/ui.js` / `src/app.js` — stylesheet and shell / all the DOM.
 - `tools/build.mjs` — inlines the modules into one file (`file://` blocks ES imports).
 

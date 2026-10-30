@@ -349,6 +349,32 @@ test('watch notices a week written by the other phone', async () => {
   assert.equal(seen.length, 1, 'stopping did not stop it');
 });
 
+test('a week that cannot be folded in does not stop the watcher', async () => {
+  // The callback is the app's merge, and a merge is the most likely thing here
+  // to throw: one malformed row -- a buggy build, a hand-edited document --
+  // and a watcher that re-arms only on the happy path would never look again.
+  // Silently, for the rest of the session, on both phones.
+  const fetch = pg({ doc: { hers: true }, rev: 7, updated_at: 'x', updated_by: HER });
+  const c = clock();
+  const blew = [];
+  const cloud = make(fetch, signedIn, { ...c, onError: (e) => blew.push(e) });
+
+  let seen = 0;
+  const stop = cloud.watch(HID, () => { seen += 1; throw new TypeError('weights is not iterable'); },
+    { period: 1000, rev: () => 0 });
+
+  await c.tick(1000);
+  assert.equal(seen, 1);
+  await c.tick(1000);
+  assert.equal(seen, 2, 'one week it could not read and the other phone is never heard from again');
+  stop();
+
+  // Contained, not hidden: a merge that cannot run is a bug, and the only place
+  // left to say so is the console.
+  assert.equal(blew.length, 2);
+  assert.match(blew[0].message, /not iterable/);
+});
+
 test('your own push does not come back to you as news', async () => {
   const fetch = pg({ doc: { mine: true }, rev: 3, updated_at: 'x', updated_by: ME });
   const c = clock();

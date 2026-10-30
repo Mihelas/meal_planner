@@ -85,9 +85,41 @@ not need to know which email a given code arrived in — see `verifyCode()` in
 - **Enable email provider**: on
 - **Confirm email**: on
 - **Secure email change**: on (default)
+- **Allow new users to sign up**: **off**
 
 Nothing else is enabled. There is no password sign-in to configure, because
 there are no passwords.
+
+### Why sign-up is off, and what it costs
+
+The app is a static file on a public host. Anyone can load it, and a sign-in
+screen drawn by that file is a picture of a door -- the browser has already
+downloaded the whole app before the screen renders. Nothing sensitive is in it
+(the publishable key is public by design, the week lives in `localStorage`, and
+the household row is behind RLS), so the page being open is not the problem.
+
+The problem was the *mailbox*. With sign-up open, any address on earth could ask
+for a code, and each one spent a Resend send from your own domain, a monthly
+active user on the Supabase bill, and a row in `auth.users`. The app now sends
+`should_create_user: false` with every code request, and this toggle says the
+same thing server-side; either one alone would do, both means a dashboard click
+cannot quietly re-open it.
+
+**The cost: a new person cannot let themselves in.** An invite is only half the
+story -- the invited person still needs somewhere to sign in to.
+
+### Adding somebody
+
+1. **Authentication → Users → Add user → Create new user.**
+2. Their email address. Tick **Auto Confirm User**; leave the password blank or
+   random, it is never used.
+3. Send them an invite from the app (Settings → Household), which they accept
+   after their first sign-in.
+
+Somebody whose account does not exist yet sees *"There is no account for that
+address. Ask whoever runs this plan to add you."* rather than a code that never
+arrives, which is the failure that would otherwise be impossible to diagnose
+from their end.
 
 ---
 

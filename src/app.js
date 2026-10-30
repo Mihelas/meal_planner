@@ -16,7 +16,7 @@ import {
 } from './planner.js';
 import {
   candidatesFor, swapMeal, swapAndLearn, banAndReplace, unbanRecipe, toggleLock,
-  RATINGS, rateRecipe, noteRecipe, setPantry, clearPantry,
+  RATINGS, rateRecipe, noteRecipe, setPantry, clearPantry, clearBought,
   addCustomRecipe, removeCustomRecipe, importRecipes,
 } from './swap.js';
 import {
@@ -28,6 +28,7 @@ import {
 } from './shopping.js';
 import {
   createStore, addWeight, weightTrend, migrate, mergeStates, cloudDoc, sameDoc,
+  SCHEMA_VERSION,
 } from './store.js';
 import { createRemote, describeRemote } from './remote.js';
 import { createHouseholds } from './household.js';
@@ -234,6 +235,53 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     // is not an edit, and a revision is not free.
     sync?.schedule();
     cloudTick();
+  }
+
+  // ------------------------------------------- renders that are not yours
+  //
+  // render() rewrites the whole page, which is the right thing when somebody
+  // tapped something: they asked for the result and the result is what they
+  // get. It is the wrong thing thirty seconds into typing a note, when the
+  // other phone's week lands and the sheet closes, the text goes and the cursor
+  // with it. The data is never at risk -- the save already happened before any
+  // of this -- but the sentence somebody was halfway through writing is, and
+  // from their side that is indistinguishable from losing data.
+  //
+  // So an arrival asks to be shown rather than showing itself, and waits for
+  // whatever is in the way to go.
+
+  /** Whether somebody is mid-action, in the sense that a re-render would spoil it. */
+  function midAction() {
+    if (root.querySelector('dialog[open]')) return true;
+    const el = win.document?.activeElement;
+    if (!el || el === win.document.body) return false;
+    return /^(input|textarea|select)$/i.test(el.tagName) || el.isContentEditable === true;
+  }
+
+  let waiting = false;
+
+  /** A render nobody asked for: shown now if the page is idle, queued if not. */
+  function renderQuietly() {
+    if (!midAction()) { waiting = false; render(); return; }
+    waiting = true;
+    // The *display* waits; the week does not. Everything render() does to the
+    // page can be done again in a minute, but these two are how an edit leaves
+    // this phone, and somebody can sit in a dialog for a quarter of an hour.
+    sync?.schedule();
+    cloudTick();
+  }
+
+  /** Called when the thing that was in the way goes away. */
+  function renderIfWaiting() {
+    if (!waiting || midAction()) return;
+    waiting = false;
+    render();
+  }
+
+  /** Close a sheet, and let through anything that was waiting on it. */
+  function closeDialog(dlg) {
+    dlg.close();
+    renderIfWaiting();
   }
 
   function banner() {
@@ -984,6 +1032,12 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
    * NAS). Each device reads it before writing, so bans, ratings, notes, your own
    * recipes and the cupboard merge instead of overwriting. Chrome and Edge only:
    * everywhere else the honest answer is Export/Import, said by name.
+   *
+   * Hidden entirely once there is a household, which is the usual case now: the
+   * row does this job for phones, and two merge paths into one document is a
+   * second door for every future bug in either of them. A file that was already
+   * linked keeps its card, saying why it has gone quiet -- see standDown in
+   * sync.js.
    */
   function viewSyncPanel() {
     const s = store.state;
@@ -992,12 +1046,24 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     const supported = sync?.supported ?? false;
     const linked = sync?.linked ?? false;
     const needsAsk = linked && sync?.permission !== 'granted';
+    // The household does this job now. With no file ever linked there is nothing
+    // to say at all, and a card headed "Share with <her>" stacked above the one
+    // that is genuinely sharing with her is two answers to one question. With a
+    // file still linked there is exactly one thing worth saying: why it has gone
+    // quiet, and how to have it back instead.
+    const standDown = sync?.standDown ?? false;
+    if (standDown && !linked) return '';
     return `
       <div class="card pad stack" style="margin-top:.9rem">
-        <h2 style="font-size:1rem">Share with ${esc(s.settings.people[1].name)}</h2>
+        <h2 style="font-size:1rem">${standDown ? 'The shared file' : `Share with ${esc(s.settings.people[1].name)}`}</h2>
         <div class="notice ${tone}">${esc(st.text)}</div>
         ${sync?.error && sync.error !== st.text ? `<div class="notice bad">${esc(sync.error)}</div>` : ''}
-        ${supported ? `
+        ${standDown ? `
+          <div class="btn-row">
+            <span class="spacer"></span>
+            <button class="btn ghost" data-act="sync-unlink">Unlink the file</button>
+          </div>
+        ` : supported ? `
           <div class="btn-row">
             ${needsAsk ? '<button class="btn primary" data-act="sync-reconnect">🔓 Reconnect</button>' : ''}
             <button class="btn ${linked ? 'ghost' : 'primary'}" data-act="sync-new">📄 ${linked ? 'Link a different file' : 'Create the shared file'}</button>
@@ -1027,12 +1093,12 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     const days = when ? Math.floor((Date.now() - when) / 86400000) : null;
     const age = days === null ? '' : days <= 0 ? ' (changed today)' : days === 1 ? ' (changed yesterday)' : ` (changed ${days} days ago)`;
     return `<div class="notice no-print stack">
-      <div><b>This phone has a week, and so does the household${esc(age)}.</b> Only one of them can be the shared week from here on — the other is replaced.</div>
+      <div><b>This phone has a week, and so does the household${esc(age)}.</b> Only one of them can be the shared week from here on — the other is replaced. Everything else is kept from both sides: bans, favourites, ratings, notes, your own recipes, the cupboard and the weight log.</div>
       <div class="btn-row">
         <button class="btn primary" data-act="cloud-keep">Keep this phone's week</button>
         <button class="btn" data-act="cloud-take">Take the household's week</button>
       </div>
-      <p class="tiny faint">Nothing has been written yet, in either direction. Export in Settings first if you would rather keep both.</p>
+      <p class="tiny faint">Nothing has been written yet, in either direction. The week you do not pick is the only thing lost — export in Settings first if you want a copy of it.</p>
     </div>`;
   }
 
@@ -1271,6 +1337,13 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       read() {
         const s = store.state;
         if (s.cloud?.householdId !== id) return null;
+        // Written by a build newer than this one. migrate() kept the fields it
+        // did not recognise rather than deleting them, but it could not keep the
+        // plan if the plan's own shape changed, and nothing here can maintain
+        // what it cannot read. So this phone reads and shows, and writes nothing:
+        // the row keeps the real week until the app updates. Without this the
+        // phone that was behind would decide what the other one gets to keep.
+        if (Number(s.schema) > SCHEMA_VERSION) return null;
         if (s.cloud.at != null && s.cloud.at === Number(s.savedAt ?? 0)) return null;
         return { doc: cloudDoc(s), rev: Number(s.cloud.rev ?? 0) };
       },
@@ -1278,14 +1351,32 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       // did not adopt would mean pushing the un-merged week again on the next
       // keystroke, and her changes would bounce straight back out of the row.
       merge(mineDoc, theirsDoc) {
-        store.save(mergeStates(store.state, theirsDoc), { touch: false });
+        adopt(theirsDoc);
         return cloudDoc(store.state);
       },
       write(doc, rev) {
         cloudMark(id, rev, Number(doc.savedAt ?? store.state.savedAt ?? 0));
-        render();
+        renderQuietly();
       },
     };
+  }
+
+  /**
+   * Fold a document from the household into this one.
+   *
+   * `{ touch: false }` because a merge is not an edit -- `savedAt` is what the
+   * next merge resolves by, and moving it here would make adopting her week
+   * outrank the phone she is holding.
+   *
+   * And the undo offer goes. It is a snapshot of the whole document, which is
+   * honest for one step back and a lie the moment somebody else's work lands on
+   * top: rolling back to it would throw away her swap and her weigh-in along
+   * with this phone's ban, and then push the rollback out as the newest word.
+   * The offer cannot be kept, so it is not left on the screen.
+   */
+  function adopt(theirs) {
+    store.save(mergeStates(store.state, theirs ?? {}), { touch: false });
+    undo = null;
   }
 
   /** Called at the end of every render, like the file syncer. */
@@ -1305,9 +1396,55 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
    * what stops two phones pushing each other's merges back and forth for ever.
    */
   function cloudArrived(id, got) {
-    store.save(mergeStates(store.state, got.doc ?? {}), { touch: false });
+    adopt(got.doc ?? {});
     const settled = sameDoc(cloudDoc(store.state), got.doc ?? {});
     cloudMark(id, got.rev, settled ? Number(store.state.savedAt ?? 0) : null);
+    renderQuietly();
+  }
+
+  /**
+   * The two-weeks question, answered.
+   *
+   * What the person is choosing is the *week*, which is what the question asks
+   * about and the only thing the banner promises to replace. Everything durable
+   * -- bans, favourites, ratings, notes, their own recipes, the pantry, the
+   * trolley ticks, the weight log -- is kept from both sides either way. There
+   * is no reading of "keep this phone's week" under which her Tuesday weigh-in
+   * should disappear, and both answers used to do exactly that in one direction
+   * or the other: the whole document was replaced, and months of the losing
+   * side's data went with the week it happened to be attached to.
+   *
+   * So: mergeStates for the union, and then the chosen plan put back on top of
+   * it. The merge picks a week by `savedAt`, and somebody has just picked one by
+   * hand -- a button beats a timestamp, or the question was theatre.
+   */
+  function cloudAnswer(keepMine) {
+    const ask = cloudAsk;
+    if (!ask) return;
+    cloudAsk = null;
+    const s = store.state;
+    // Through migrate(), because this document was written by a version of the
+    // app that may not be this one. `sync` and `cloud` stay this phone's own --
+    // a file link and a revision are local, exactly as cloudDoc() says.
+    const theirs = migrate({ ...ask.doc, sync: s.sync, cloud: s.cloud });
+    store.save({
+      ...mergeStates(s, theirs),
+      plan: (keepMine ? s.plan : theirs.plan) ?? null,
+      // mergeStates writes a note explaining which week replaced which and why,
+      // reasoning from `savedAt`. Here the answer came from a button, so that
+      // note would be describing a decision nobody made. The banner above the
+      // buttons already said what was about to happen.
+      mergeNote: null,
+    }, { touch: false });
+    // The undo offer goes, for the same reason it goes in adopt(): it is a
+    // snapshot of the whole document, and hers is in it now.
+    undo = null;
+    // Unless the row already holds the result, the bookmark's `at` is cleared,
+    // and that is what makes the next render push. It is cleared in both
+    // directions now -- even the answer that kept this phone's week has her
+    // durable half folded into it, and the row has never seen that document.
+    const settled = sameDoc(cloudDoc(store.state), ask.doc ?? {});
+    cloudMark(ask.id, ask.rev, settled ? Number(store.state.savedAt ?? 0) : null);
     render();
   }
 
@@ -1352,7 +1489,20 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     cloudBusy = true;
     cloud.pull(id).then((got) => {
       cloudBusy = false;
-      if (!got.ok) { render(); return; }
+      // Let the guard go, or two seconds of bad signal here cost the whole
+      // session: no bookmark, no watcher, no push, and nothing for the card to
+      // report as broken, because the queue was never reached. The next render
+      // asks again -- which is most of the point of asking from render().
+      //
+      // The next one, though: deliberately no render() from here. render() is
+      // what asks, so letting the guard go and rendering in the same breath is a
+      // request that re-issues itself the instant it fails. Against a row that
+      // is failing for any lasting reason -- no route, no network, a policy that
+      // says no -- that is not a retry, it is a tight loop, and because it runs
+      // as a promise chain the microtask queue never drains: no timer gets a
+      // turn, so the tab does not degrade, it locks. One ask per render keeps
+      // the recovery and loses the loop.
+      if (!got.ok) { cloudAsked = false; return; }
       const theirs = got.missing ? null : got.doc;
       if (!theirs || !Object.keys(theirs).length) {
         // Nothing there to lose, so this phone's week becomes the household's.
@@ -1872,7 +2022,9 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     root.querySelectorAll('[data-dismiss-install]').forEach((b) => b.onclick = () => {
       commit((s) => ({ ...s, ui: { ...s.ui, installHint: 'off' } }));
     });
-    act('clear-bought', () => commit((s) => ({ ...s, bought: {} })));
+    act('clear-bought', () => commit((s) => ({
+      ...s, bought: {}, memory: clearBought(s.memory, s.bought),
+    })));
 
     // Which days the shopping list covers. This is the only day row in the app
     // that is allowed to be empty: clearing it is a step on the way to picking
@@ -2037,32 +2189,10 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
     act('account-cancel', () => { accountCode = ''; remote?.cancelSignIn(); });
     act('account-signout', () => { accountCode = ''; Promise.resolve(remote?.signOut()).catch(() => {}); });
 
-    // The shared week. Both answers to the question write a bookmark and nothing
-    // else: the push that follows is the ordinary one at the end of render().
-    act('cloud-keep', () => {
-      const ask = cloudAsk;
-      if (!ask) return;
-      cloudAsk = null;
-      // `at: null` is "the row does not hold this phone's week yet", which is
-      // exactly what makes the next render push it.
-      cloudMark(ask.id, ask.rev, null);
-      render();
-    });
-    act('cloud-take', () => {
-      const ask = cloudAsk;
-      if (!ask) return;
-      cloudAsk = null;
-      const s = store.state;
-      // Through migrate(), because this document was written by a version of the
-      // app that may not be this one, and `sync` is kept because a file link is
-      // this phone's business and has nothing to do with whose week won.
-      const taken = migrate({ ...ask.doc, sync: s.sync, cloud: s.cloud });
-      store.save(
-        { ...taken, cloud: { householdId: ask.id, rev: ask.rev, at: Number(taken.savedAt ?? 0) } },
-        { touch: false },
-      );
-      render();
-    });
+    // The shared week. Both answers do the same two things and differ in one
+    // word; see cloudAnswer.
+    act('cloud-keep', () => cloudAnswer(true));
+    act('cloud-take', () => cloudAnswer(false));
     act('cloud-retry', () => { Promise.resolve(cloud?.flush?.()).then(render).catch(() => {}); });
 
     // The household. Everything that changes something goes through household(),
@@ -2235,7 +2365,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
           }),
         });
       });
-      dlg.close();
+      closeDialog(dlg);
     };
 
     dlg.querySelectorAll('[data-preset]').forEach((b) => b.onclick = () => {
@@ -2248,7 +2378,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       if (!(kcal > 0)) return;   // a log with no number would be worse than none
       log(label, kcal);
     };
-    dlg.querySelector('[data-close]').onclick = () => dlg.close();
+    dlg.querySelector('[data-close]').onclick = () => closeDialog(dlg);
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
   }
 
@@ -2307,7 +2437,7 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
         <button class="btn" data-random>🎲 Just pick one</button>
       </div>`;
 
-    dlg.querySelectorAll('[data-pick]').forEach((b) => b.onclick = () => { applySwap(b.dataset.pick); dlg.close(); });
+    dlg.querySelectorAll('[data-pick]').forEach((b) => b.onclick = () => { applySwap(b.dataset.pick); closeDialog(dlg); });
     dlg.querySelector('[data-random]').onclick = () => {
       const s2 = store.state;
       const who = whoFor(s2.plan, target);
@@ -2320,9 +2450,9 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
       for (const pid of who.slice(1)) plan = forceRecipe(plan, s2, target, pid, picked);
       store.save({ ...s2, plan, memory: res.memory });
       render();
-      dlg.close();
+      closeDialog(dlg);
     };
-    dlg.querySelector('[data-close]').onclick = () => dlg.close();
+    dlg.querySelector('[data-close]').onclick = () => closeDialog(dlg);
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
   }
 
@@ -2361,13 +2491,25 @@ export function createApp({ root, win = typeof window !== 'undefined' ? window :
   // it can touch has to exist first. restore() is deliberately quiet — a browser
   // will not re-grant file permission without a click, so a lapsed link shows a
   // Reconnect button instead of an error nobody asked for.
-  sync = createSync({ win, store, onChange: render });
+  sync = createSync({ win, store, onChange: renderQuietly });
   Promise.resolve(sync.restore()).catch(() => {});
   // Writing was already automatic; reading was not, so a tab left open all day
   // pushed an ever-staler week over the top of hers. Now it reads back too.
   sync.watch();
   // A debounced write could still be in flight when the tab goes away.
   win?.addEventListener?.('pagehide', () => { sync?.flush?.(); cloud?.flush?.(); });
+  // Leaving a field is the other way out of midAction(). One listener, attached
+  // once -- root itself survives every render, only its innerHTML is replaced --
+  // and a tick's delay because focusout fires before the next element has focus.
+  root.addEventListener('focusout', () => { win.setTimeout(() => renderIfWaiting(), 0); });
+
+  // Escape is the other way a sheet closes, and it does not go through any of the
+  // buttons. A browser fires `close` on the dialog itself, which does not bubble
+  // -- hence the capture phase, which also means a dialog added later is covered
+  // without anyone remembering to wire it up. Without this, dismissing a sheet
+  // with the keyboard leaves a week that has already arrived sitting unpainted
+  // until the next poll happens to bring something else.
+  root.addEventListener('close', () => renderIfWaiting(), true);
 
   // The account, built for the same reason as the syncer: it renders on every
   // change. completeFromUrl() is the one thing that has to happen on boot -- a

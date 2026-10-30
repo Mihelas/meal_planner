@@ -10,6 +10,7 @@
 // than taking the app down. A stored blob from an older version is migrated
 // or dropped, never trusted as-is.
 
+import { now } from './clock.js';
 import {
   PLAN_VERSION, defaultSettings, COOKING_STYLES, pantryKey, legacyPantryKey,
   SLOT_KEYS, isEntry, planId, shoppingSlice, MAX_VEGETARIAN_DAYS,
@@ -32,16 +33,18 @@ export const SCHEMA_VERSION = 4;
 export const TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** The shape of `memory.removed`: one `{ id: when }` map per bucket that can shrink. */
-export const REMOVED_BUCKETS = ['banned', 'favourites', 'custom', 'bought'];
+export const REMOVED_BUCKETS = [
+  'banned', 'favourites', 'custom', 'bought', 'pantry', 'ratings', 'notes',
+];
 
 /** Drop removals older than the window, and anything whose stamp cannot be compared. */
-export function pruneRemoved(removed, now = Date.now()) {
+export function pruneRemoved(removed, asOf = Date.now()) {
   const out = {};
   for (const bucket of REMOVED_BUCKETS) {
     out[bucket] = {};
     for (const [id, when] of Object.entries(removed?.[bucket] ?? {})) {
       const at = Number(when);
-      if (Number.isFinite(at) && at > 0 && now - at <= TOMBSTONE_TTL_MS) out[bucket][id] = at;
+      if (Number.isFinite(at) && at > 0 && asOf - at <= TOMBSTONE_TTL_MS) out[bucket][id] = at;
     }
   }
   return out;
@@ -101,7 +104,9 @@ export function emptyState() {
       pantry: {},        // pantryKey -> true, the things always in the cupboard
       // Deletions, so the merge can say "not that any more" and not just "and also
       // this". `{ id: when }` per bucket, pruned after TOMBSTONE_TTL_MS.
-      removed: { banned: {}, favourites: {}, custom: {}, bought: {} },
+      removed: {
+        banned: {}, favourites: {}, custom: {}, bought: {}, pantry: {}, ratings: {}, notes: {},
+      },
     },
     plan: null,
     bought: {},          // shopping item id -> true when it is already in the trolley
@@ -160,10 +165,17 @@ export function migrate(raw) {
   const base = emptyState();
   if (!raw || typeof raw !== 'object') return base;
 
+  // What the document says it is, before this function overwrites it. Anything
+  // higher than SCHEMA_VERSION was written by a build newer than this one, and
+  // from here on that is a different situation from an old document: an old one
+  // is missing things, a new one has things this code has never heard of.
+  const came = Number(raw.schema);
+  const fromNewerBuild = Number.isFinite(came) && came > SCHEMA_VERSION;
+
   const state = {
     ...base,
     ...raw,
-    schema: SCHEMA_VERSION,
+    schema: fromNewerBuild ? came : SCHEMA_VERSION,
     settings: { ...base.settings, ...(raw.settings ?? {}) },
     memory: { ...base.memory, ...(raw.memory ?? {}) },
     ui: { ...base.ui, ...(raw.ui ?? {}) },
@@ -251,8 +263,24 @@ export function migrate(raw) {
   // after a recipe id got saved -- and then synced to the other device. The two
   // notes are one-shot explanations the UI clears once read; `savedAt` is the
   // merge's tie-breaker and is stamped on save rather than created here.
-  const keep = new Set([...Object.keys(base), 'savedAt', 'migrationNote', 'mergeNote']);
-  for (const key of Object.keys(state)) if (!keep.has(key)) delete state[key];
+  //
+  // Not from a newer build, though. There the unknown keys are not junk, they are
+  // the next version's fields, and deleting them is destruction rather than
+  // tidying: two phones on different versions is the normal state of an installed
+  // PWA -- one of them updates first -- so the phone that is behind would strip
+  // the week and, without the push guard that goes with this, publish the
+  // stripped copy back as the newest word.
+  if (!fromNewerBuild) {
+    const keep = new Set([...Object.keys(base), 'savedAt', 'migrationNote', 'mergeNote']);
+    for (const key of Object.keys(state)) if (!keep.has(key)) delete state[key];
+  } else {
+    // Said plainly, because the only fix is on this phone. The plan below may
+    // still have been rebuilt -- a newer build can have a newer plan shape too,
+    // and the UI cannot render what it does not know -- but that now costs only
+    // this device's copy: `fromNewerBuild` stops the push, so the household row
+    // keeps the real week until this phone is caught up and can read it again.
+    state.migrationNote = 'This week was written by a newer version of the planner than the one on this device, so parts of it cannot be shown and nothing will be saved to the household until this app updates. Close it completely and reopen it to update.';
+  }
   return state;
 }
 
@@ -282,8 +310,8 @@ function remapPantryKeys(state) {
   for (const item of names) {
     for (const unit of INGREDIENT_UNITS) {
       const was = legacyPantryKey({ item, unit });
-      const now = pantryKey({ item, unit });
-      if (was !== now) moves.set(was, now);
+      const next = pantryKey({ item, unit });
+      if (was !== next) moves.set(was, next);
     }
   }
   if (!moves.size) return state;
@@ -340,8 +368,13 @@ export function createStore(win = typeof window !== 'undefined' ? window : undef
    * `savedAt` is the merge's tie-breaker, and pulling used to stamp it -- so a device
    * that merely *looked* at the week outranked the one actually being used, for ever.
    * It now means what it says: somebody changed something here.
+   *
+   * The default `at` is the corrected clock, not this phone's. Both stamps
+   * written here are read by the merge as "which of these two is newer", and a
+   * comparison between two devices' own clocks answers a different question
+   * than the one being asked. See clock.js.
    */
-  function save(next = state, { touch = true, at = Date.now() } = {}) {
+  function save(next = state, { touch = true, at = now() } = {}) {
     const device = next?.sync?.device ?? state?.sync?.device ?? null;
     // Stamped here rather than at each mutation site, so no future mutation can
     // forget to do it. save() is the one chokepoint every change already goes through.
@@ -377,7 +410,11 @@ export function createStore(win = typeof window !== 'undefined' ? window : undef
     importJSON(text) {
       const parsed = JSON.parse(text); // throws on junk; the caller shows the message
       if (!parsed || typeof parsed !== 'object') throw new Error('That file does not contain planner data.');
-      return save(migrate(parsed));
+      // The bookmark stays with the device, exactly as it does in cloudDoc: a
+      // file exported before she joined carries the household from before, and
+      // restoring it would silently re-aim this phone at an old household -- or
+      // at none -- with a revision that no longer means anything.
+      return save({ ...migrate(parsed), cloud: state.cloud });
     },
     /** Take the shared copy of a synced file and fold it into what is here. */
     mergeJSON(text) {
@@ -413,15 +450,15 @@ export function stampChangedEntries(prev, next, at, device) {
   for (let i = 0; i < out.days.length; i++) {
     for (const slot of SLOT_KEYS) {
       const was = prev.days[i]?.[slot];
-      const now = out.days[i]?.[slot];
-      if (!now) continue;
-      if (isEntry(now)) {
-        if (!sameEntry(was, now)) now.touched = { at, device };
+      const after = out.days[i]?.[slot];
+      if (!after) continue;
+      if (isEntry(after)) {
+        if (!sameEntry(was, after)) after.touched = { at, device };
         continue;
       }
-      for (const pid of Object.keys(now)) {
+      for (const pid of Object.keys(after)) {
         const before = isEntry(was) ? was : was?.[pid];
-        if (!sameEntry(before, now[pid])) now[pid].touched = { at, device };
+        if (!sameEntry(before, after[pid])) after[pid].touched = { at, device };
       }
     }
   }
@@ -451,7 +488,14 @@ export function snapshot(state, device = null) {
  * document that arrived without one would lose every race it entered.
  */
 export function cloudDoc(state) {
-  const { cloud, sync, ...rest } = state ?? {};
+  // `ui` goes with them. It is local like the other two, but for a sharper
+  // reason: mergeStates forces `ui: mine.ui`, so a travelling `ui` could never
+  // match the row again while the two people were on different tabs -- sameDoc
+  // would be false for ever and each phone would re-push after every poll, half
+  // a minute apart, spending a revision each time over which tab is open.
+  const {
+    cloud, sync, ui, ...rest
+  } = state ?? {};
   return { ...rest, savedAt: Number(state?.savedAt ?? 0) };
 }
 
@@ -468,10 +512,20 @@ export function cloudDoc(state) {
  * comparison has been through JSON and back and the other has not.
  */
 export function sameDoc(a, b) {
+  // A key that is absent and a key holding null say the same thing: nothing
+  // here. They have to compare equal, or the comparison costs a revision for a
+  // field neither person set -- mergeStates emits `mergeNote: null` when the two
+  // weeks agreed, and a document that never merged has no such key at all, so
+  // the first phone to fold in a remote week would push its null straight back.
+  // Dropped on objects only: a null sitting in an array is a position, and
+  // closing the gap would make two different lists look like one.
   const canon = (v) => {
     if (Array.isArray(v)) return v.map(canon);
     if (v && typeof v === 'object') {
-      return Object.keys(v).sort().reduce((o, k) => { o[k] = canon(v[k]); return o; }, {});
+      return Object.keys(v).sort().reduce((o, k) => {
+        if (v[k] != null) o[k] = canon(v[k]);
+        return o;
+      }, {});
     }
     return v;
   };
@@ -625,18 +679,23 @@ export function mergeStates(mine, theirs) {
   const b = theirs.memory ?? {};
   const mineAt = Number(mine.savedAt ?? 0);
   const theirsAt = Number(theirs.savedAt ?? 0);
-  const removed = pruneRemoved({
-    banned: removedUnion(a.removed?.banned, b.removed?.banned),
-    favourites: removedUnion(a.removed?.favourites, b.removed?.favourites),
-    custom: removedUnion(a.removed?.custom, b.removed?.custom),
-    bought: removedUnion(a.removed?.bought, b.removed?.bought),
-  });
+  // Over the bucket list rather than one line per bucket: written out by hand,
+  // three buckets were added above without their union, and a bucket whose
+  // removals are never unioned is a deletion that does not stick -- which looks
+  // exactly like the bug the tombstones were added to fix.
+  const removed = pruneRemoved(Object.fromEntries(REMOVED_BUCKETS.map(
+    (bucket) => [bucket, removedUnion(a.removed?.[bucket], b.removed?.[bucket])],
+  )));
 
   const sidesOf = (x, y) => [
     { has: new Set(x ?? []), at: mineAt },
     { has: new Set(y ?? []), at: theirsAt },
   ];
   const live = (ids, bucket, sides) => ids.filter((id) => survives(id, removed[bucket], sides));
+  /** The same rule for the maps: keep a key only if its removal did not win. */
+  const liveMap = (map, gone, sides) => Object.fromEntries(
+    Object.entries(map).filter(([k]) => survives(k, gone, sides)),
+  );
 
   const customById = new Map();
   for (const r of [...(a.custom ?? []), ...(b.custom ?? [])]) if (r?.id) customById.set(r.id, r);
@@ -651,26 +710,48 @@ export function mergeStates(mine, theirs) {
     if (survives(k, removed.bought, boughtSides)) bought[k] = true;
   }
 
+  // Later save wins a date. Iterating mine-then-theirs and letting the Map
+  // overwrite made the remote entry win every collision whichever phone was
+  // saved later, so correcting a typo in Monday's weight had the other copy put
+  // the typo straight back -- into the trend, which is what the plan is steered
+  // by once there are three weeks of it.
   const weightsByDate = new Map();
-  for (const w of [...(mine.weights ?? []), ...(theirs.weights ?? [])]) if (w?.date) weightsByDate.set(w.date, w);
+  const older = remoteWins ? mine.weights : theirs.weights;
+  const later = remoteWins ? theirs.weights : mine.weights;
+  for (const w of [...(older ?? []), ...(later ?? [])]) if (w?.date) weightsByDate.set(w.date, w);
 
   const week = mergePlans(mine.plan, theirs.plan, remoteWins);
 
-  return migrate({
+  const out = migrate({
     ...(remoteWins ? theirs : mine),
     plan: week.plan,
     mergeNote: week.note,
     memory: {
       banned: live(unionArr(a.banned, b.banned), 'banned', sidesOf(a.banned, b.banned)),
       favourites: live(unionArr(a.favourites, b.favourites), 'favourites', sidesOf(a.favourites, b.favourites)),
-      ratings: remoteWins ? { ...a.ratings, ...b.ratings } : { ...b.ratings, ...a.ratings },
-      notes: remoteWins ? { ...a.notes, ...b.notes } : { ...b.notes, ...a.notes },
+      ratings: liveMap(
+        remoteWins ? { ...a.ratings, ...b.ratings } : { ...b.ratings, ...a.ratings },
+        removed.ratings,
+        sidesOf(Object.keys(a.ratings ?? {}), Object.keys(b.ratings ?? {})),
+      ),
+      notes: liveMap(
+        remoteWins ? { ...a.notes, ...b.notes } : { ...b.notes, ...a.notes },
+        removed.notes,
+        sidesOf(Object.keys(a.notes ?? {}), Object.keys(b.notes ?? {})),
+      ),
       stats: {
         away: maxCounts(a.stats?.away, b.stats?.away),
         kept: maxCounts(a.stats?.kept, b.stats?.kept),
       },
       custom: [...customById.values()].filter((r) => survives(r.id, removed.custom, customSides)),
-      pantry: unionAmounts(a.pantry, b.pantry),
+      // Max of the two amounts, then the removals applied on top: "I have none"
+      // is an absence and max has no way to say it, so emptying a staple could
+      // only ever be undone by the other copy.
+      pantry: liveMap(
+        unionAmounts(a.pantry, b.pantry),
+        removed.pantry,
+        sidesOf(Object.keys(a.pantry ?? {}), Object.keys(b.pantry ?? {})),
+      ),
       removed,
     },
     bought,
@@ -685,6 +766,22 @@ export function mergeStates(mine, theirs) {
     // every push after that would be refused, silently, for ever.
     cloud: mine.cloud,
   });
+
+  // The `at` inside it, though, is this device's note of what the household row
+  // already holds, and after a merge that is a statement about a document that
+  // no longer exists. It is also the guard cloudJob.read() uses to decide there
+  // is nothing to push -- so leaving it in place is how a week folded in from
+  // the *shared file* never reached the household at all: nothing moved
+  // `savedAt`, the bookmark still matched, and her bans sat on this phone until
+  // somebody happened to make an unrelated edit.
+  //
+  // Conditional, and that is the load-bearing part. Clearing it on every merge
+  // would mean every poll of the shared file ended in a push, and two phones
+  // polling would hand each other the same document for ever, a revision at a
+  // time. Only a merge that actually changed the shared half invalidates it.
+  return sameDoc(cloudDoc(mine), cloudDoc(out))
+    ? out
+    : { ...out, cloud: { ...out.cloud, at: null } };
 }
 
 // ------------------------------------------------------------- weight log

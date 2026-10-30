@@ -13,10 +13,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createStore, emptyState, migrate, mergeStates, SCHEMA_VERSION,
-  TOMBSTONE_TTL_MS, pruneRemoved, planAddress,
+  TOMBSTONE_TTL_MS, pruneRemoved, planAddress, REMOVED_BUCKETS,
 } from '../src/store.js';
 import {
   generateWeek, defaultSettings, logOffPlan, dayTotals, SLOT_KEYS, entriesIn, isEntry,
+  forget, remember,
 } from '../src/planner.js';
 import {
   swapMeal, banRecipe, unbanRecipe, addCustomRecipe, removeCustomRecipe,
@@ -223,6 +224,101 @@ test('a deleted custom recipe stays deleted', () => {
   }
 });
 
+test('emptying a staple from the cupboard sticks', () => {
+  // The cupboard merges by `Math.max` on the amount, which is right for "I have
+  // 500 g" meeting "I have 1 kg" and wrong for "I have none": zero is not a
+  // smaller amount, it is an absence, and max cannot express it. Without a
+  // tombstone, taking the last of the rice out on one phone has the other phone
+  // put it straight back -- and then the shopping list leaves rice off, which is
+  // the way this one is actually noticed, in the shop.
+  const a = at({ ...emptyState(), memory: { ...emptyState().memory, pantry: { 'reis-1000-g': 1000 } } }, T - 3000);
+  const b = at({
+    ...emptyState(),
+    memory: { ...emptyState().memory, pantry: {}, removed: { pantry: { 'reis-1000-g': T - 2000 } } },
+  }, T - 2000);
+  for (const [x, y] of [[a, b], [b, a]]) {
+    assert.equal(mergeStates(x, y).memory.pantry['reis-1000-g'], undefined, 'the rice came back');
+  }
+});
+
+test('buying the staple again after emptying it sticks', () => {
+  const stale = at({
+    ...emptyState(),
+    memory: { ...emptyState().memory, pantry: {}, removed: { pantry: { 'reis-1000-g': T - 2000 } } },
+  }, T - 2000);
+  const back = at({ ...emptyState(), memory: { ...emptyState().memory, pantry: { 'reis-1000-g': 1000 } } }, T - 1000);
+  for (const [x, y] of [[stale, back], [back, stale]]) {
+    assert.equal(mergeStates(x, y).memory.pantry['reis-1000-g'], 1000, 'the restocked rice was swallowed');
+  }
+});
+
+test('clearing a note or a rating is not read as never having set one', () => {
+  // Both maps merge by spread, which makes an absent key and a deleted key the
+  // same thing: the side that still holds a value always wins, whichever side
+  // was saved later. Clearing a rating is one click on the star that is already
+  // lit, so this is ordinary use, not an edge case -- and a rating that will not
+  // go away keeps steering the planner towards a meal somebody stopped liking.
+  const a = at({
+    ...emptyState(),
+    memory: { ...emptyState().memory, ratings: { 'd-huehner-ramen': 5 }, notes: { 'd-huehner-ramen': 'too salty' } },
+  }, T - 3000);
+  const b = at({
+    ...emptyState(),
+    memory: {
+      ...emptyState().memory,
+      ratings: {},
+      notes: {},
+      removed: { ratings: { 'd-huehner-ramen': T - 2000 }, notes: { 'd-huehner-ramen': T - 2000 } },
+    },
+  }, T - 2000);
+  for (const [x, y] of [[a, b], [b, a]]) {
+    const m = mergeStates(x, y).memory;
+    assert.equal(m.ratings['d-huehner-ramen'], undefined, 'the cleared rating came back');
+    assert.equal(m.notes['d-huehner-ramen'], undefined, 'the cleared note came back');
+  }
+});
+
+test('rating it again after clearing sticks', () => {
+  const stale = at({
+    ...emptyState(),
+    memory: { ...emptyState().memory, ratings: {}, removed: { ratings: { 'd-huehner-ramen': T - 2000 } } },
+  }, T - 2000);
+  const back = at({
+    ...emptyState(), memory: { ...emptyState().memory, ratings: { 'd-huehner-ramen': 3 } },
+  }, T - 1000);
+  for (const [x, y] of [[stale, back], [back, stale]]) {
+    assert.equal(mergeStates(x, y).memory.ratings['d-huehner-ramen'], 3, 'the new rating was swallowed');
+  }
+});
+
+test('a corrected weigh-in is not overwritten by the copy it corrected', () => {
+  // Weights merge by date into a Map, mine first and theirs second, so the
+  // remote entry wins every collision regardless of which phone was saved
+  // later. Fix a typo in Monday's weight and the other copy puts the typo back
+  // -- and the trend, which is the number the whole plan is steered by after
+  // three weeks, is computed from it.
+  const typo = at({ ...emptyState(), weights: [{ date: '2026-10-01', person1: 1020 }] }, T - 3000);
+  const fixed = at({ ...emptyState(), weights: [{ date: '2026-10-01', person1: 102 }] }, T - 2000);
+  for (const [x, y] of [[typo, fixed], [fixed, typo]]) {
+    assert.deepEqual(mergeStates(x, y).weights, [{ date: '2026-10-01', person1: 102 }],
+      'the corrected weigh-in lost to the one it corrected');
+  }
+});
+
+test('every bucket the merge knows about can actually be written to', () => {
+  // There are two bucket lists -- REMOVED_BUCKETS here and REMOVED_EMPTY in
+  // planner.js, because swap.js needs one and is built before store.js -- and a
+  // bucket present in one but not the other is a deletion that silently does not
+  // stick. Which is indistinguishable from the bug tombstones were added to fix,
+  // so it is worth one test rather than a comment.
+  for (const bucket of REMOVED_BUCKETS) {
+    const out = forget({}, bucket, 'some-id', T - 1000);
+    assert.ok(out.removed[bucket]?.['some-id'] > 0, `forget() cannot write to ${bucket}`);
+    assert.equal(remember(out, bucket, 'some-id').removed[bucket]['some-id'], undefined,
+      `remember() cannot clear ${bucket}`);
+  }
+});
+
 test('tombstones are pruned, so the file does not grow for ever', () => {
   const now = Date.UTC(2026, 0, 1);
   const kept = now - TOMBSTONE_TTL_MS + 86400000;
@@ -373,13 +469,13 @@ test('an old saved state gains the new fields without losing anything', () => {
   assert.ok(SCHEMA_VERSION >= 4);
   assert.deepEqual(m.memory.banned, ['d-huehner-ramen'], 'the ban was dropped by the migration');
   assert.equal(m.memory.ratings['d-huehner-ramen'], 4);
-  assert.deepEqual(m.memory.removed, { banned: {}, favourites: {}, custom: {}, bought: {} });
+  assert.deepEqual(Object.keys(m.memory.removed).sort(), [...REMOVED_BUCKETS].sort());
   assert.equal(m.bought['milch-1-5-ml'], true);
 });
 
 test('a state with junk in removed is repaired, not trusted', () => {
   const m = migrate({ schema: 3, memory: { removed: 'nope' } });
-  assert.deepEqual(m.memory.removed, { banned: {}, favourites: {}, custom: {}, bought: {} });
+  assert.deepEqual(Object.keys(m.memory.removed).sort(), [...REMOVED_BUCKETS].sort());
   const n = migrate({ schema: 4, memory: { removed: { banned: { x: 'soon' }, custom: null, bought: {} } } });
   assert.deepEqual(n.memory.removed.banned, {}, 'a non-numeric stamp cannot be compared, so it cannot be kept');
   assert.deepEqual(n.memory.removed.custom, {});
@@ -533,5 +629,49 @@ test('the household row cannot hand this device a revision that is not its own',
   const out = mergeStates(mine, theirs);
 
   assert.equal(out.savedAt, 99, 'the newer week should still have won');
-  assert.deepEqual(out.cloud, { householdId: 'h1', rev: 4, at: 10 });
+  assert.equal(out.cloud.householdId, 'h1');
+  assert.equal(out.cloud.rev, 4, "her phone's revision replaced the one the next push is conditioned on");
+  // `at` is the one part of the bookmark a merge is allowed to touch, and here
+  // it has to: the row holds her week, this document is now a merge of both, and
+  // a bookmark saying otherwise is what would stop the merge ever being pushed.
+  assert.equal(out.cloud.at, null);
+});
+
+// ------------------------------------------------------- the file and the row
+//
+// Two transports, one merge. The shared file and the household row both fold a
+// document in through mergeStates, but only the row has a push attached, and the
+// push is skipped when the bookmark says the row already holds what this phone
+// has. A file merge used to leave that bookmark untouched: fold her bans in from
+// the file and the household never heard about them, because nothing had moved
+// `savedAt` and so `cloudJob.read()` had nothing to report.
+
+test('a merge that changed the shared week invalidates the bookmark', () => {
+  const mine = migrate({
+    savedAt: T, memory: { banned: ['a'] }, cloud: { householdId: 'h1', rev: 7, at: T },
+  });
+  const theirs = migrate({ savedAt: T - 60_000, memory: { banned: ['b'] } });
+
+  const out = mergeStates(mine, theirs);
+
+  assert.deepEqual(out.memory.banned.sort(), ['a', 'b'], 'the union is the premise of this test');
+  assert.equal(out.cloud.householdId, 'h1', 'the merge moved this phone to another household');
+  assert.equal(out.cloud.rev, 7, 'the merge moved the revision the next push is conditioned on');
+  assert.equal(out.cloud.at, null,
+    'the row holds a week without her ban and nothing is going to push the merged one');
+});
+
+test('a merge that changed nothing leaves the bookmark alone', () => {
+  // The other half of the same rule, and the reason it is conditional: clearing
+  // the bookmark unconditionally would mean every poll of the shared file ended
+  // in a push, and two phones polling would push each other's identical
+  // documents back and forth for ever, a revision at a time.
+  const mine = migrate({
+    savedAt: T, memory: { banned: ['a'] }, cloud: { householdId: 'h1', rev: 7, at: T },
+  });
+  const theirs = migrate({ savedAt: T - 60_000, memory: { banned: ['a'] } });
+
+  const out = mergeStates(mine, theirs);
+
+  assert.equal(out.cloud.at, T, 'an identical document was treated as news');
 });

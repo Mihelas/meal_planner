@@ -1,0 +1,7 @@
+# Nothing here is for a search engine. The app is a household's week, and the
+# only thing an index does for it is hand strangers a sign-in form to guess at.
+# Belt and braces with the <meta name="robots"> in the shell: this file stops a
+# crawler that honours it before the request, the meta stops one that fetched
+# the page anyway from keeping it.
+User-agent: *
+Disallow: /

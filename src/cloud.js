@@ -51,6 +51,7 @@ export function createCloud({
   clearTimer = (id) => clearTimeout(id),
   quiet = 800,
   retry = 15000,
+  onError = (e) => console.error('[cloud]', e),
 } = {}) {
   const { rest } = createRest({ remote, fetch: doFetch, url, key });
   const q = encodeURIComponent;
@@ -250,8 +251,23 @@ export function createCloud({
         id2 = null;
         const got = await pull(id);
         if (stopped) return;
-        if (got.ok && !got.missing && got.rev > mine()) onRemote(got);
-        id2 = setTimer(look, period);
+        try {
+          if (got.ok && !got.missing && got.rev > mine()) onRemote(got);
+        } catch (e) {
+          // `onRemote` is the app folding a document in, which is the most
+          // likely thing here to throw: one malformed row -- a hand-edited
+          // document, an older build reading a field it does not know -- and a
+          // watcher that re-armed only on the happy path would stop looking
+          // after it. Silently, for the rest of the session, on both phones.
+          //
+          // Reported rather than swallowed. Nobody can act on it from the app,
+          // so there is no message for the card and nothing to interrupt the
+          // week with, but a merge that cannot run is a bug in this code and the
+          // console is where the next person debugging it will look.
+          onError(e);
+        } finally {
+          if (!stopped) id2 = setTimer(look, period);
+        }
       };
 
       id2 = setTimer(look, period);

@@ -11,6 +11,8 @@
 // list is indistinguishable from "there is nothing", so a missing token has to
 // stop the request rather than flavour it.
 
+import { learn } from './clock.js';
+
 const OFFLINE = 'You appear to be offline. The plan still works; try again when you have a connection.';
 const SIGNED_OUT = 'Sign in first — a household lives in the account, not on this phone.';
 
@@ -86,6 +88,14 @@ export function createRest({
     } catch {
       return { ok: false, error: OFFLINE, offline: true };
     }
+
+    // Every answer carries an HTTP `Date`, and the two phones need one clock
+    // between them to decide whose edit is newer. Read here rather than in a
+    // module of its own making its own request: this is the request the app is
+    // already making, every thirty seconds, on both devices. Optional chaining
+    // because a fetch fake -- and a cached response in some browsers -- has no
+    // `headers`, and reading the clock must not break a request that worked.
+    learn(res.headers?.get?.('date'));
 
     let payload = null;
     try { payload = await res.json(); } catch { /* 204, or HTML from a proxy */ }
